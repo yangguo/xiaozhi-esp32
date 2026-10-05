@@ -23,10 +23,12 @@
 
 **负责范围：** 新增 `docs/AI_PASSPORT_BASELINE.md`、`scripts/check_passport_budget.py`、`scripts/tests/test_passport_budget.py`；核查板卡 `config.json`、`partitions/v2/8m.csv` 与 `.github/workflows/build.yml`。本项先不改硬件/UI行为。
 
+- [ ] 阅读[官方 Agent 开发教程](https://ai-passport.folotoy.cn/guides/create-a-play-with-agent/)及路线图第 21 节；区分编程 Agent 与运行时 Agent Profile，记录 FoloToy BSP 对照与本 fork 构建边界。
 - [ ] 记录 upstream SHA、IDF 实际版本、Python/工具链版本、板卡/variant、配置与资产哈希；读取当前 sdkconfig 中 multiline/音频/OTA 相关开关。
 - [ ] 在已安装的 IDF 环境执行 `idf.py --version` 与 `python scripts/build.py folotoy/ai-passport --name ai-passport`，保存 app/merged bin、ELF/map 与 sha256；没有 SDK 时明确记录阻碍，不用静态审查冒充编译。
 - [ ] 对预算检查器先写超槽、余量不足、资产超限、合法配置的 host fixtures；解析分区和实际产物大小，输出可读报告，越界返回非零。
 - [ ] 运行 `python3 -m unittest discover -s scripts/tests -v`，确认 host tests；只读报告接入 CI，首轮测量后启用合适 gate。
+- [ ] 保留可恢复固件；确认 USB 数据线与串口权限、刷写偏移及配置影响。先展示固件和目标设备，取得刷写授权后再执行；社区固件预检为可选项。
 - [ ] 真机完成当前点击聊天与音量、配网、断网恢复；测 internal/DMA heap、最大块、stack、TLS/录音/播放/OTA 峰值。
 - [ ] 真机执行 60/360/2160 秒以及短按/长按/提前释放唤醒测试；电流无法测时留空并列入未验收，不填估计值。
 
@@ -49,6 +51,7 @@
 
 - [ ] 先明确 host 测试 harness，纯逻辑与 LVGL/IDF 分离；验证 UTF-8 边界截断、空文本、长词、缺字及混合标点。
 - [ ] 核查上游多行配置和现有单缓冲，复用换行；实现安全边距、最大文字区、翻页/滚动与最近 turn 上限。
+- [ ] 检查最终中文字体与混合文本覆盖；以单个 PTT/STT/回答闭环验证第一版 UI，再加菜单/Profile。
 - [ ] 用 20 个固定文本与真机截图核查顶栏/圆角/底部；测峰值 heap，不增加 framebuffer。
 - [ ] 跑 host 测试、Passport 编译及 size gate；改共享显示则补代表性显示路径构建。
 
@@ -129,7 +132,8 @@
 
 - [ ] 按路线图 10 条验收标准逐条收集证据，未通过项明确列出。
 - [ ] 实测双 OTA 槽、启动验证/rollback 配置、USB 恢复、旧固件读取旧配置；不得先宣称自动回滚。
-- [ ] 生成基线/增强固件校验和、配置与版本说明，排除秘密和未授权资产。
+- [ ] 生成基线/增强固件校验和、配置与版本说明，排除秘密和未授权资产；交付可从 `0x0` 刷写的 merged bin，核对 bootloader/partition/app/资产布局，并分开说明合并刷写与 OTA 的配置保留行为。
+- [ ] 真机完成屏幕/按键/声音/连接检查，再做离开电脑的单手使用验证；按版本保存固件、源码 SHA 和异常记录。
 - [ ] 先候选版本，再完成真机验收后标记 V1.0；发布外部服务/上游 PR 的范围另行确认。
 
 **完成证据：** 可用恢复包与操作记录、NOTICE、签字验收清单。依赖 P1-04。
