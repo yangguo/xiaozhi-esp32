@@ -42,6 +42,33 @@ TABLE_SIZE = """
 Total image size: 154957 bytes (.bin may be padded larger)
 """
 
+# Real ESP-IDF 6.1 idf.py size transcript for this ESP32-C3 board.
+# Instruction RAM is not a separate row.
+C3_SIZE = """
+                            Memory Type Usage Summary
+┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┓
+┃ Memory Type/Section ┃ Used [bytes] ┃ Used [%] ┃ Remain [bytes] ┃ Total [bytes] ┃
+┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━┩
+│ Flash Code          │      1617508 │          │                │               │
+│    .text            │      1617508 │          │                │               │
+│ Flash Data          │       667552 │          │                │               │
+│    .rodata          │       666936 │          │                │               │
+│    .init_array      │          296 │          │                │               │
+│    .appdesc         │          256 │          │                │               │
+│    .tbss            │           40 │          │                │               │
+│    .tdata           │           24 │          │                │               │
+│ DRAM                │       109716 │    34.15 │         211580 │        321296 │
+│    .text            │        60004 │    18.68 │                │               │
+│    .bss             │        29584 │     9.21 │                │               │
+│    .data            │        20128 │     6.26 │                │               │
+│ RTC SLOW            │           96 │     1.17 │           8096 │          8192 │
+│    .rtc_reserved    │           40 │     0.49 │                │               │
+│    .force_slow      │           36 │     0.44 │                │               │
+│    .text            │           20 │     0.24 │                │               │
+└─────────────────────┴──────────────┴──────────┴────────────────┴───────────────┘
+Total image size: 2364912 bytes (.bin may be padded larger)
+"""
+
 
 class PassportSizeParseTests(unittest.TestCase):
     def test_legacy_and_idf61_table_report_the_same_fields(self):
@@ -58,6 +85,63 @@ class PassportSizeParseTests(unittest.TestCase):
         self.assertEqual(table["iram_used_bytes"], 51711)
         self.assertEqual(table["flash_used_bytes"], 64442 + 30208)
         self.assertEqual(table["image_size_bytes"], 154957)
+
+    def test_esp32c3_summary_without_iram_row(self):
+        parsed = report.parse_size_report(C3_SIZE)
+        self.assertEqual(parsed["flash_code_bytes"], 1617508)
+        self.assertEqual(parsed["flash_data_bytes"], 667552)
+        self.assertEqual(parsed["flash_used_bytes"], 1617508 + 667552)
+        self.assertEqual(parsed["dram_used_bytes"], 109716)
+        self.assertEqual(parsed["dram_remain_bytes"], 211580)
+        self.assertEqual(parsed["dram_total_bytes"], 321296)
+        self.assertEqual(parsed["dram_used_percent"], 34.15)
+        self.assertIsNone(parsed["iram_used_bytes"])
+        self.assertIsNone(parsed["iram_remain_bytes"])
+        self.assertEqual(parsed["image_size_bytes"], 2364912)
+
+        measured = dict(parsed)
+        measured["firmware_bytes"] = 0x241790
+        measured["assets_bytes"] = 1000
+        failures, warnings = report.evaluate_gates(measured, {"known": False})
+        self.assertEqual(failures, [])
+        self.assertFalse(any("IRAM remain" in warning for warning in warnings))
+
+        text = report._format_report(measured, failures, warnings)
+        self.assertIn("PASSPORT_FLASH_USAGE_BYTES=2285060", text)
+        self.assertIn("PASSPORT_DRAM_USAGE_BYTES=109716", text)
+        self.assertIn("PASSPORT_DRAM_REMAIN_BYTES=211580", text)
+        self.assertIn("PASSPORT_IRAM_USAGE_BYTES=n/a", text)
+        self.assertIn("PASSPORT_IRAM_REMAIN_BYTES=n/a", text)
+        self.assertIn("PASSPORT_FIRMWARE_SIZE_BYTES=2365328", text)
+        self.assertIn("no IRAM row", text)
+        self.assertIn("Result: PASS", text)
+
+    def test_missing_iram_still_fails_low_dram_remain(self):
+        measured = {
+            "dram_used_bytes": 300000,
+            "dram_remain_bytes": 1024,
+            "iram_used_bytes": None,
+            "iram_remain_bytes": None,
+            "flash_used_bytes": 1000,
+            "firmware_bytes": 1000,
+            "assets_bytes": 1,
+        }
+        failures, _warnings = report.evaluate_gates(measured, {"known": False})
+        self.assertTrue(any("DRAM remain" in failure for failure in failures))
+        self.assertFalse(any("IRAM" in failure for failure in failures))
+
+    def test_iram_remain_fails_only_when_present(self):
+        measured = {
+            "dram_used_bytes": 1000,
+            "dram_remain_bytes": 100000,
+            "iram_used_bytes": 1000,
+            "iram_remain_bytes": 100,
+            "flash_used_bytes": 1000,
+            "firmware_bytes": 1000,
+            "assets_bytes": 1,
+        }
+        failures, _warnings = report.evaluate_gates(measured, {"known": False})
+        self.assertTrue(any("IRAM remain" in failure for failure in failures))
 
     def test_checked_in_baseline_is_unknown(self):
         baseline = report.load_baseline(report.DEFAULT_BASELINE)
@@ -284,6 +368,56 @@ class PassportArtifactTests(unittest.TestCase):
             self.assertIn("0x8000 partition-table.bin", flash_args)
             self.assertIn("0x20000 app.bin", flash_args)
             self.assertIn("0x600000 assets.bin", flash_args)
+
+    def test_c3_size_text_stages_artifacts_and_passes(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            build_dir = Path(directory)
+            self._write_bins(build_dir)
+            (build_dir / "flasher_args.json").write_text(
+                json.dumps(
+                    {
+                        "write_flash_args": [
+                            "--flash-mode",
+                            "dio",
+                            "--flash-size",
+                            "8MB",
+                            "--flash-freq",
+                            "80m",
+                        ],
+                        "flash_files": {
+                            "0x0": "bootloader/bootloader.bin",
+                            "0x8000": "partition_table/partition-table.bin",
+                            "0xd000": "ota_data_initial.bin",
+                            "0x20000": "xiaozhi.bin",
+                            "0x600000": "generated_assets.bin",
+                        },
+                        "bootloader": {"offset": "0x0", "file": "bootloader/bootloader.bin"},
+                        "partition-table": {
+                            "offset": "0x8000",
+                            "file": "partition_table/partition-table.bin",
+                        },
+                        "app": {"offset": "0x20000", "file": "xiaozhi.bin"},
+                        "assets": {"offset": "0x600000", "file": "generated_assets.bin"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            code = report.run_report(build_dir, report.DEFAULT_BASELINE, C3_SIZE)
+            self.assertEqual(code, 0)
+            summary = (
+                build_dir / "passport-artifacts/recovery/passport-size-report.txt"
+            ).read_text(encoding="utf-8")
+            self.assertIn("PASSPORT_IRAM_USAGE_BYTES=n/a", summary)
+            self.assertIn("PASSPORT_DRAM_REMAIN_BYTES=211580", summary)
+            self.assertIn("Result: PASS", summary)
+            self.assertTrue(
+                (build_dir / "passport-artifacts/incremental/app.bin").is_file()
+            )
+            self.assertTrue(
+                (build_dir / "passport-artifacts/recovery/merged-binary.bin").is_file()
+            )
 
 
 class PassportBoardConfigTests(unittest.TestCase):

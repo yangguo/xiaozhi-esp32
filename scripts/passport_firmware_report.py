@@ -5,6 +5,11 @@ Runs after ``scripts/build.py`` in the Passport GitHub Actions workflow.
 Static DRAM remain is the linker's estimate of heap, not a measured free-heap
 number: startup allocations make the runtime heap smaller. A checked-in
 baseline is required before a growth delta can fail the build.
+
+ESP-IDF 6.1 ``idf.py size`` prints a Memory Type Usage Summary box. On
+ESP32-C3 that table has Flash Code, Flash Data, and DRAM, and no IRAM row.
+IRAM is reported when the row exists and is left as n/a otherwise; a missing
+IRAM row does not fail the parse or the IRAM remain gate.
 """
 
 from __future__ import annotations
@@ -105,32 +110,49 @@ def _parse_legacy(text: str) -> dict | None:
     return report
 
 
+_TABLE_ROWS = {"DRAM", "IRAM", "Flash Code", "Flash Data"}
+
+
+def _split_table_row(raw: str) -> list[str] | None:
+    """Split one box-drawing row, keeping blank cells so columns stay aligned."""
+    if "│" not in raw and "┃" not in raw:
+        return None
+    parts = [part.strip() for part in raw.replace("┃", "│").split("│")]
+    if parts and parts[0] == "":
+        parts = parts[1:]
+    if parts and parts[-1] == "":
+        parts = parts[:-1]
+    if len(parts) < 2:
+        return None
+    return parts
+
+
 def _parse_table(text: str) -> dict | None:
-    """Parse the IDF 6.1 ``idf.py size`` box table."""
+    """Parse the IDF 6.1 ``idf.py size`` Memory Type Usage Summary.
+
+    Flash is Flash Code plus Flash Data. DRAM is required. IRAM is optional:
+    ESP32-C3 summaries omit that row because instruction RAM is not listed
+    separately.
+    """
     rows: dict[str, tuple[int | None, float | None, int | None, int | None]] = {}
     for raw in text.splitlines():
-        if "│" not in raw and "┃" not in raw:
-            continue
-        parts = [part.strip() for part in raw.replace("┃", "│").split("│")]
-        parts = [part for part in parts if part != ""]
-        if len(parts) < 2:
-            continue
-        name = parts[0]
-        if name not in {"DRAM", "IRAM", "Flash Code", "Flash Data"}:
+        parts = _split_table_row(raw)
+        if parts is None or parts[0] not in _TABLE_ROWS:
             continue
         used = _parse_int(parts[1]) if len(parts) > 1 else None
         percent = _parse_float(parts[2]) if len(parts) > 2 else None
         remain = _parse_int(parts[3]) if len(parts) > 3 else None
         total = _parse_int(parts[4]) if len(parts) > 4 else None
-        rows[name] = (used, percent, remain, total)
-    if not {"DRAM", "IRAM", "Flash Code", "Flash Data"} <= rows.keys():
+        rows[parts[0]] = (used, percent, remain, total)
+    if not {"DRAM", "Flash Code", "Flash Data"} <= rows.keys():
         return None
     report = _blank_report()
     report["dram_used_bytes"], report["dram_used_percent"], report["dram_remain_bytes"], report["dram_total_bytes"] = rows["DRAM"]
-    report["iram_used_bytes"], report["iram_used_percent"], report["iram_remain_bytes"], report["iram_total_bytes"] = rows["IRAM"]
+    if "IRAM" in rows:
+        report["iram_used_bytes"], report["iram_used_percent"], report["iram_remain_bytes"], report["iram_total_bytes"] = rows["IRAM"]
     report["flash_code_bytes"] = rows["Flash Code"][0]
     report["flash_data_bytes"] = rows["Flash Data"][0]
-    if report["flash_code_bytes"] is None or report["flash_data_bytes"] is None:
+    if report["dram_used_bytes"] is None or report["flash_code_bytes"] is None or report["flash_data_bytes"] is None:
         return None
     report["flash_used_bytes"] = report["flash_code_bytes"] + report["flash_data_bytes"]
     image = _IMAGE_SIZE.search(text)
@@ -141,8 +163,8 @@ def _parse_table(text: str) -> dict | None:
 
 def parse_size_report(text: str) -> dict:
     report = _parse_legacy(text) or _parse_table(text)
-    if report is None or report["dram_used_bytes"] is None or report["iram_used_bytes"] is None:
-        raise ValueError("Could not parse Flash, DRAM, and IRAM from idf.py size output")
+    if report is None or report["dram_used_bytes"] is None:
+        raise ValueError("Could not parse Flash and DRAM from idf.py size output")
     if report["flash_used_bytes"] is None:
         raise ValueError("Could not parse flash usage from idf.py size output")
     return report
@@ -413,29 +435,33 @@ def evaluate_gates(measured: dict, baseline: dict) -> tuple[list[str], list[str]
 
     dram_remain = measured.get("dram_remain_bytes")
     iram_remain = measured.get("iram_remain_bytes")
-    if dram_remain is None or iram_remain is None:
+    iram_used = measured.get("iram_used_bytes")
+    if dram_remain is None:
         warnings.append(
-            "DRAM/IRAM remain was not in the size report, so the absolute "
-            "memory ceiling was not applied"
+            "DRAM remain was not in the size report, so the DRAM ceiling was not applied"
         )
-    else:
-        if dram_remain < DRAM_REMAIN_FAIL_BYTES:
-            failures.append(
-                f"DRAM remain {dram_remain} bytes is below {DRAM_REMAIN_FAIL_BYTES} "
-                "(static estimate of heap is nearly exhausted)"
-            )
-        elif dram_remain < DRAM_REMAIN_WARN_BYTES:
+    elif dram_remain < DRAM_REMAIN_FAIL_BYTES:
+        failures.append(
+            f"DRAM remain {dram_remain} bytes is below {DRAM_REMAIN_FAIL_BYTES} "
+            "(static estimate of heap is nearly exhausted)"
+        )
+    elif dram_remain < DRAM_REMAIN_WARN_BYTES:
+        warnings.append(
+            f"DRAM remain {dram_remain} bytes is below {DRAM_REMAIN_WARN_BYTES}"
+        )
+    if iram_remain is None:
+        if iram_used is not None:
             warnings.append(
-                f"DRAM remain {dram_remain} bytes is below {DRAM_REMAIN_WARN_BYTES}"
+                "IRAM remain was not in the size report, so the IRAM ceiling was not applied"
             )
-        if iram_remain < IRAM_REMAIN_FAIL_BYTES:
-            failures.append(
-                f"IRAM remain {iram_remain} bytes is below {IRAM_REMAIN_FAIL_BYTES}"
-            )
-        elif iram_remain < IRAM_REMAIN_WARN_BYTES:
-            warnings.append(
-                f"IRAM remain {iram_remain} bytes is below {IRAM_REMAIN_WARN_BYTES}"
-            )
+    elif iram_remain < IRAM_REMAIN_FAIL_BYTES:
+        failures.append(
+            f"IRAM remain {iram_remain} bytes is below {IRAM_REMAIN_FAIL_BYTES}"
+        )
+    elif iram_remain < IRAM_REMAIN_WARN_BYTES:
+        warnings.append(
+            f"IRAM remain {iram_remain} bytes is below {IRAM_REMAIN_WARN_BYTES}"
+        )
 
     if not baseline.get("known"):
         warnings.append(
@@ -452,9 +478,14 @@ def evaluate_gates(measured: dict, baseline: dict) -> tuple[list[str], list[str]
         ("firmware_bytes", "max_firmware_increase_bytes", "Firmware size"),
     )
     for field, limit_field, label in comparisons:
-        current = measured[field]
+        current = measured.get(field)
         reference = baseline.get(field)
         limit = baseline.get(limit_field)
+        if current is None and reference is None:
+            continue
+        if current is None:
+            warnings.append(f"{label} was not reported, so its growth gate was not applied")
+            continue
         if reference is None or limit is None:
             failures.append(f"Baseline is marked known but {field} or {limit_field} is missing")
             continue
@@ -467,17 +498,34 @@ def evaluate_gates(measured: dict, baseline: dict) -> tuple[list[str], list[str]
     return failures, warnings
 
 
+def _shown(value, missing: str = "unknown") -> str:
+    return missing if value is None else str(value)
+
+
 def _format_report(measured: dict, failures: list[str], warnings: list[str]) -> str:
     dram_remain = measured.get("dram_remain_bytes")
+    iram_used = measured.get("iram_used_bytes")
     iram_remain = measured.get("iram_remain_bytes")
+    if iram_used is None and iram_remain is None:
+        iram_used_text = "n/a"
+        iram_remain_text = "n/a"
+        iram_line = (
+            "IRAM usage: n/a. ESP32-C3 idf.py size has no IRAM row in the "
+            "Memory Type Usage Summary, so the IRAM remain gate is skipped."
+        )
+    else:
+        iram_used_text = _shown(iram_used)
+        iram_remain_text = _shown(iram_remain)
+        iram_line = f"IRAM usage: {iram_used_text} bytes used, {iram_remain_text} bytes remain"
+    image_size = measured.get("image_size_bytes")
     lines = [
         "AI Passport firmware size report",
         "target: esp32c3  flash: 8MB  psram: no  wake_word: off",
         f"PASSPORT_FLASH_USAGE_BYTES={measured['flash_used_bytes']}",
         f"PASSPORT_DRAM_USAGE_BYTES={measured['dram_used_bytes']}",
-        f"PASSPORT_DRAM_REMAIN_BYTES={dram_remain if dram_remain is not None else 'unknown'}",
-        f"PASSPORT_IRAM_USAGE_BYTES={measured['iram_used_bytes']}",
-        f"PASSPORT_IRAM_REMAIN_BYTES={iram_remain if iram_remain is not None else 'unknown'}",
+        f"PASSPORT_DRAM_REMAIN_BYTES={_shown(dram_remain)}",
+        f"PASSPORT_IRAM_USAGE_BYTES={iram_used_text}",
+        f"PASSPORT_IRAM_REMAIN_BYTES={iram_remain_text}",
         f"PASSPORT_FIRMWARE_SIZE_BYTES={measured['firmware_bytes']}",
         f"PASSPORT_ASSETS_SIZE_BYTES={measured['assets_bytes']}",
         (
@@ -486,18 +534,19 @@ def _format_report(measured: dict, failures: list[str], warnings: list[str]) -> 
         ),
         (
             f"DRAM usage: {measured['dram_used_bytes']} bytes used, "
-            f"{dram_remain if dram_remain is not None else 'unknown'} bytes remain"
+            f"{_shown(dram_remain)} bytes remain"
         ),
-        (
-            f"IRAM usage: {measured['iram_used_bytes']} bytes used, "
-            f"{iram_remain if iram_remain is not None else 'unknown'} bytes remain"
-        ),
+        iram_line,
         (
             f"Firmware size: {measured['firmware_bytes']} bytes "
             f"(app partition {APP_PARTITION_BYTES} bytes)"
         ),
         "DRAM remain is the static heap estimate from the linker, not measured free heap.",
     ]
+    if image_size is not None:
+        lines.append(
+            f"Total image size: {image_size} bytes (.bin may be padded larger than this estimate)."
+        )
     if warnings:
         lines.append("Warnings:")
         lines.extend(f"  {warning}" for warning in warnings)

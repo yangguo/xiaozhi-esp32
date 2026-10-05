@@ -52,7 +52,7 @@ push to `main`, in the `espressif/idf:v6.1` container:
 
 1. `python -m unittest discover -s scripts/tests -v`
 2. `python scripts/build.py folotoy/ai-passport --name ai-passport`
-3. A size report: flash usage, DRAM usage, IRAM usage, and firmware size
+3. A size report: flash usage (Flash Code + Flash Data), DRAM usage, IRAM when `idf.py size` prints an IRAM row, and firmware size
 4. Two artifacts (see below)
 
 `config.json` stays ESP32-C3, 8 MB flash (`partitions/v2/8m.csv`), no PSRAM,
@@ -77,8 +77,10 @@ Both zips also contain `passport-size-report.txt`. DRAM remain in that report
 is the linker's static heap estimate, not a measured free-heap value. There is
 no checked-in size baseline yet, so a growth-versus-previous-build failure is
 not armed. The job still fails if the app image exceeds the `ota_0` partition
-(`0x2f0000`), the assets image exceeds 2 MB, or static DRAM/IRAM remain falls
-below the ceilings in `scripts/passport_firmware_report.py`.
+(`0x2f0000`), the assets image exceeds 2 MB, or static DRAM remain falls
+below the ceiling in `scripts/passport_firmware_report.py`. The ESP32-C3
+summary has no IRAM row, so that remain gate applies only when IRAM figures
+are present.
 
 From the recovery directory:
 
