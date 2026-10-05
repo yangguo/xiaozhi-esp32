@@ -169,12 +169,121 @@ class PassportArtifactTests(unittest.TestCase):
             self.assertIn("0x8000 partition-table.bin", flash_args)
             self.assertIn("0x20000 app.bin", flash_args)
             self.assertIn("0x600000 assets.bin", flash_args)
-            self.assertIn("--flash_size 8MB", flash_args)
+            self.assertIn("--flash-size 8MB", flash_args)
             summary = (incremental / "passport-size-report.txt").read_text(encoding="utf-8")
             self.assertIn("PASSPORT_FLASH_USAGE_BYTES=94650", summary)
             self.assertIn("PASSPORT_DRAM_USAGE_BYTES=10716", summary)
             self.assertIn("PASSPORT_IRAM_USAGE_BYTES=51711", summary)
             self.assertIn("PASSPORT_FIRMWARE_SIZE_BYTES=9", summary)
+
+    def _write_bins(self, build_dir: Path) -> None:
+        (build_dir / "bootloader").mkdir()
+        (build_dir / "partition_table").mkdir()
+        (build_dir / "bootloader/bootloader.bin").write_bytes(b"boot")
+        (build_dir / "partition_table/partition-table.bin").write_bytes(b"part")
+        (build_dir / "xiaozhi.bin").write_bytes(b"app-image")
+        (build_dir / "generated_assets.bin").write_bytes(b"assets")
+        (build_dir / "ota_data_initial.bin").write_bytes(b"ota")
+        (build_dir / "merged-binary.bin").write_bytes(b"merged")
+
+    def test_idf61_flasher_args_use_partition_table_hyphen(self):
+        """IDF 6.1 writes ``partition-table``, not ``partition_table``."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            build_dir = Path(directory)
+            self._write_bins(build_dir)
+            (build_dir / "flasher_args.json").write_text(
+                json.dumps(
+                    {
+                        "write_flash_args": [
+                            "--flash-mode",
+                            "dio",
+                            "--flash-size",
+                            "8MB",
+                            "--flash-freq",
+                            "80m",
+                        ],
+                        "flash_settings": {
+                            "flash_mode": "dio",
+                            "flash_size": "8MB",
+                            "flash_freq": "80m",
+                        },
+                        "flash_files": {
+                            "0x0": "bootloader/bootloader.bin",
+                            "0x8000": "partition_table/partition-table.bin",
+                            "0xd000": "ota_data_initial.bin",
+                            "0x20000": "xiaozhi.bin",
+                            "0x600000": "generated_assets.bin",
+                        },
+                        "bootloader": {
+                            "offset": "0x0",
+                            "file": "bootloader/bootloader.bin",
+                            "encrypted": "false",
+                        },
+                        "partition-table": {
+                            "offset": "0x8000",
+                            "file": "partition_table/partition-table.bin",
+                            "encrypted": "false",
+                        },
+                        "app": {
+                            "offset": "0x20000",
+                            "file": "xiaozhi.bin",
+                            "encrypted": "false",
+                        },
+                        "otadata": {
+                            "offset": "0xd000",
+                            "file": "ota_data_initial.bin",
+                            "encrypted": "false",
+                        },
+                        "assets": {
+                            "offset": "0x600000",
+                            "file": "generated_assets.bin",
+                            "encrypted": "false",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            code = report.run_report(build_dir, report.DEFAULT_BASELINE, TABLE_SIZE)
+            self.assertEqual(code, 0)
+            incremental = build_dir / "passport-artifacts/incremental"
+            flash_args = (incremental / "flash_args").read_text(encoding="utf-8")
+            self.assertIn("--flash-mode dio --flash-size 8MB --flash-freq 80m", flash_args)
+            self.assertNotIn("ota_data_initial.bin", flash_args)
+            self.assertNotIn("ota.bin", flash_args)
+            self.assertEqual((incremental / "app.bin").read_bytes(), b"app-image")
+            self.assertEqual((incremental / "assets.bin").read_bytes(), b"assets")
+            self.assertTrue((build_dir / "passport-artifacts/recovery/merged-binary.bin").is_file())
+
+    def test_flash_files_alone_are_enough(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            build_dir = Path(directory)
+            self._write_bins(build_dir)
+            (build_dir / "flasher_args.json").write_text(
+                json.dumps(
+                    {
+                        "flash_files": {
+                            "0x0": "bootloader/bootloader.bin",
+                            "0x8000": "partition_table/partition-table.bin",
+                            "0xd000": "ota_data_initial.bin",
+                            "0x20000": "xiaozhi.bin",
+                            "0x600000": "generated_assets.bin",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            code = report.run_report(build_dir, report.DEFAULT_BASELINE, TABLE_SIZE)
+            self.assertEqual(code, 0)
+            flash_args = (
+                build_dir / "passport-artifacts/incremental/flash_args"
+            ).read_text(encoding="utf-8")
+            self.assertIn("0x8000 partition-table.bin", flash_args)
+            self.assertIn("0x20000 app.bin", flash_args)
+            self.assertIn("0x600000 assets.bin", flash_args)
 
 
 class PassportBoardConfigTests(unittest.TestCase):

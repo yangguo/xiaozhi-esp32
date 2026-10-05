@@ -185,50 +185,167 @@ def _run_size_tool(build_dir: Path) -> str:
     raise RuntimeError("idf.py size failed: " + "; ".join(errors))
 
 
-def _flash_file(build_dir: Path, relative: str) -> Path:
-    path = build_dir / relative
-    if not path.is_file():
-        raise FileNotFoundError(f"Missing flash image {path}")
-    return path
+def _locate_flash_file(build_dir: Path, relative: str) -> Path:
+    """Find a flash image. Paths in flasher_args.json are relative to the build dir."""
+    rel = Path(relative)
+    if rel.is_absolute() and rel.is_file():
+        return rel
+    candidates = [build_dir / rel, build_dir / rel.name]
+    if rel.parts and rel.parts[0] == "build":
+        candidates.append(build_dir / Path(*rel.parts[1:]))
+    candidates.extend(
+        [
+            build_dir / "bootloader" / rel.name,
+            build_dir / "partition_table" / rel.name,
+        ]
+    )
+    for path in candidates:
+        if path.is_file():
+            return path
+    raise FileNotFoundError(f"Missing flash image {relative} under {build_dir}")
 
 
-def resolve_flash_images(build_dir: Path) -> dict[str, tuple[int, Path]]:
-    """Return offset and path for bootloader, partition table, app, and assets."""
+def _role_for(key: str | None, relative: str) -> str | None:
+    """Map an IDF flash entry to bootloader, partition table, app, or assets.
+
+    ESP-IDF 6.1 names the partition-table entry ``partition-table`` (hyphen).
+    Older files used ``partition_table``. ``flash_files`` has no role key, so
+    the filename is used there.
+    """
+    key_name = (key or "").lower()
+    filename = Path(relative).name.lower()
+    blob = f"{key_name} {relative.lower()}"
+    if "bootloader" in blob:
+        return "bootloader"
+    if "partition-table" in blob or "partition_table" in blob:
+        return "partition-table"
+    if "asset" in blob:
+        return "assets"
+    if key_name == "app" or filename == "xiaozhi.bin":
+        return "app"
+    return None
+
+
+def _add_image(
+    images: dict[str, tuple[int, str]],
+    role: str | None,
+    offset: int,
+    relative: str,
+    *,
+    preferred: bool,
+) -> None:
+    if role is None:
+        return
+    if role not in images or preferred:
+        images[role] = (offset, relative)
+
+
+def _images_from_flasher_json(data: dict) -> dict[str, tuple[int, str]]:
+    images: dict[str, tuple[int, str]] = {}
+    flash_files = data.get("flash_files") or {}
+    if isinstance(flash_files, dict):
+        for offset, relative in flash_files.items():
+            if not isinstance(relative, str):
+                continue
+            _add_image(
+                images,
+                _role_for(None, relative),
+                int(str(offset), 0),
+                relative,
+                preferred=False,
+            )
+    for key, entry in data.items():
+        if not isinstance(entry, dict) or "file" not in entry or "offset" not in entry:
+            continue
+        relative = entry.get("file")
+        if not isinstance(relative, str) or not relative:
+            continue
+        role = _role_for(str(key), relative)
+        _add_image(images, role, int(str(entry["offset"]), 0), relative, preferred=True)
+    return images
+
+
+_OFFSET_FILE = re.compile(r"^(0x[0-9a-fA-F]+)\s+(\S+)\s*$")
+
+
+def _images_from_flash_args_text(text: str) -> dict[str, tuple[int, str]]:
+    images: dict[str, tuple[int, str]] = {}
+    for line in text.splitlines():
+        match = _OFFSET_FILE.match(line.strip())
+        if not match:
+            continue
+        relative = match.group(2)
+        _add_image(
+            images,
+            _role_for(None, relative),
+            int(match.group(1), 16),
+            relative,
+            preferred=False,
+        )
+    return images
+
+
+def _flash_option_line(data: dict | None) -> str:
+    """Esptool options from flasher_args.json. IDF 6.1 uses hyphenated flags."""
+    if data:
+        raw = data.get("write_flash_args")
+        if isinstance(raw, list) and raw:
+            return " ".join(str(part) for part in raw)
+        settings = data.get("flash_settings") or {}
+        if isinstance(settings, dict) and settings:
+            mode = settings.get("flash_mode", "dio")
+            freq = settings.get("flash_freq", "80m")
+            size = settings.get("flash_size", "8MB")
+            return f"--flash-mode {mode} --flash-freq {freq} --flash-size {size}"
+    return "--flash-mode dio --flash-freq 80m --flash-size 8MB"
+
+
+def resolve_flash_images(build_dir: Path) -> tuple[dict[str, tuple[int, Path]], str]:
+    """Return role -> (offset, path) plus the esptool option line.
+
+    Reads ``flasher_args.json`` (``flash_files`` and named entries) and, if a
+    role is still missing, ``flash_project_args`` / ``flash_args``.
+    """
+    data: dict | None = None
+    images: dict[str, tuple[int, str]] = {}
     flasher = build_dir / "flasher_args.json"
     if flasher.is_file():
-        data = json.loads(flasher.read_text(encoding="utf-8"))
-        images: dict[str, tuple[int, Path]] = {}
-        for key, label in (
-            ("bootloader", "bootloader"),
-            ("partition_table", "partition-table"),
-            ("app", "app"),
-        ):
-            entry = data.get(key) or {}
-            relative = entry.get("file")
-            offset = entry.get("offset")
-            if not relative or offset is None:
-                raise ValueError(f"{flasher} is missing {key}.file or {key}.offset")
-            images[label] = (int(str(offset), 0), _flash_file(build_dir, relative))
-        assets = None
-        for offset, relative in (data.get("flash_files") or {}).items():
-            name = Path(relative).name.lower()
-            if "asset" in name:
-                assets = (int(str(offset), 0), _flash_file(build_dir, relative))
-                break
-        if assets is None:
-            raise ValueError(f"{flasher} has no assets image")
-        images["assets"] = assets
-        return images
+        loaded = json.loads(flasher.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            raise ValueError(f"{flasher} must be a JSON object")
+        data = loaded
+        images.update(_images_from_flasher_json(loaded))
 
-    return {
-        "bootloader": (0x0, _flash_file(build_dir, "bootloader/bootloader.bin")),
-        "partition-table": (0x8000, _flash_file(build_dir, "partition_table/partition-table.bin")),
-        "app": (0x20000, _flash_file(build_dir, "xiaozhi.bin")),
-        "assets": (0x600000, _flash_file(build_dir, "generated_assets.bin")),
+    for name in ("flash_project_args", "flash_args"):
+        path = build_dir / name
+        if not path.is_file():
+            continue
+        for role, item in _images_from_flash_args_text(path.read_text(encoding="utf-8")).items():
+            if role not in images:
+                images[role] = item
+
+    missing = [role for role in ("bootloader", "partition-table", "app", "assets") if role not in images]
+    if missing:
+        raise ValueError(
+            f"Could not find {', '.join(missing)} in {flasher.name} flash_files "
+            "or flash_project_args"
+        )
+
+    resolved = {
+        role: (offset, _locate_flash_file(build_dir, relative))
+        for role, (offset, relative) in images.items()
+        if role in {"bootloader", "partition-table", "app", "assets"}
     }
+    return resolved, _flash_option_line(data)
 
 
-def stage_artifacts(build_dir: Path, images: dict[str, tuple[int, Path]], report_text: str, report_json: dict) -> Path:
+def stage_artifacts(
+    build_dir: Path,
+    images: dict[str, tuple[int, Path]],
+    report_text: str,
+    report_json: dict,
+    flash_options: str,
+) -> Path:
     root = build_dir / "passport-artifacts"
     recovery = root / "recovery"
     incremental = root / "incremental"
@@ -249,11 +366,7 @@ def stage_artifacts(build_dir: Path, images: dict[str, tuple[int, Path]], report
         "assets": "assets.bin",
     }
     ordered = sorted(images.items(), key=lambda item: item[1][0])
-    args = [
-        "--flash_mode dio",
-        "--flash_freq 80m",
-        "--flash_size 8MB",
-    ]
+    args = [flash_options]
     for label, (offset, source) in ordered:
         filename = names[label]
         shutil.copy2(source, incremental / filename)
@@ -420,21 +533,30 @@ def run_report(
     baseline_path: Path,
     size_text: str | None = None,
 ) -> int:
-    images = resolve_flash_images(build_dir)
-    if size_text is None:
-        size_text = _run_size_tool(build_dir)
-    measured = build_measured(size_text, images)
-    baseline = load_baseline(baseline_path)
-    failures, warnings = evaluate_gates(measured, baseline)
-    report_text = _format_report(measured, failures, warnings)
-    print(report_text, end="")
-    for warning in warnings:
-        print(f"::warning::{warning}")
-    for failure in failures:
-        print(f"::error::{failure}")
-    _write_step_summary(report_text)
-    stage_artifacts(build_dir, images, report_text, measured)
-    return 1 if failures else 0
+    images, flash_options = resolve_flash_images(build_dir)
+    try:
+        if size_text is None:
+            size_text = _run_size_tool(build_dir)
+        measured = build_measured(size_text, images)
+        baseline = load_baseline(baseline_path)
+        failures, warnings = evaluate_gates(measured, baseline)
+        report_text = _format_report(measured, failures, warnings)
+        print(report_text, end="")
+        for warning in warnings:
+            print(f"::warning::{warning}")
+        for failure in failures:
+            print(f"::error::{failure}")
+        _write_step_summary(report_text)
+        code = 1 if failures else 0
+    except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as error:
+        # Still stage the images. A size-text failure must not drop the
+        # recovery and incremental artifacts.
+        report_text = f"AI Passport firmware size report failed: {error}\n"
+        measured = {"error": str(error)}
+        print(report_text, file=sys.stderr)
+        code = 1
+    stage_artifacts(build_dir, images, report_text, measured, flash_options)
+    return code
 
 
 def main(argv: list[str] | None = None) -> int:

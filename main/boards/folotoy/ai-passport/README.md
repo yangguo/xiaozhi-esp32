@@ -83,13 +83,13 @@ below the ceilings in `scripts/passport_firmware_report.py`.
 From the recovery directory:
 
 ```sh
-esptool.py --chip esp32c3 -p PORT write_flash 0x0 merged-binary.bin
+python -m esptool --chip esp32c3 -p PORT write-flash 0x0 merged-binary.bin
 ```
 
 From the incremental directory (the `flash_args` file already lists the offsets):
 
 ```sh
-esptool.py --chip esp32c3 -p PORT write_flash @flash_args
+python -m esptool --chip esp32c3 -p PORT write-flash @flash_args
 ```
 
 `PORT` is the badge's USB Serial/JTAG device. A local ESP-IDF checkout is only
