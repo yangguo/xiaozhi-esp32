@@ -1,5 +1,5 @@
 #include "wifi_board.h"
-#include "display/lcd_display.h"
+#include "passport_display.h"
 #include "codecs/es8311_audio_codec.h"
 #include "application.h"
 #include "button.h"
@@ -221,7 +221,7 @@ private:
     i2c_master_bus_handle_t codec_i2c_bus_;
     PassportAdcButton* adc_button_[kAdcButtonNum];
     adc_oneshot_unit_handle_t adc_handle_ = nullptr;
-    LcdDisplay* display_;
+    PassportDisplay* display_;
     esp_lcd_panel_handle_t panel_ = nullptr;
     Cw2017BatteryMonitor* battery_;
     // Board-owned handle for the terminal ES8311 suspend sequence. The codec has
@@ -260,6 +260,22 @@ private:
     // stop waking the device - only the actions of the wake press are held back.
     bool KeyEventsBlocked() const {
         return wake_key_guard_ && esp_timer_get_time() < wake_key_guard_until_us_;
+    }
+
+    // Settings list, when open, owns UP/DOWN/OK. It has no sleep timer of its
+    // own: press-down still resets PowerSaveTimer, and a conversation or the
+    // soft-sleep stage closes the list instead of leaving it on top.
+    bool ConsumeMenuKey(PassportDisplay::MenuAction action) {
+        if (display_ == nullptr || !display_->IsMenuOpen()) {
+            return false;
+        }
+        auto& app = Application::GetInstance();
+        if (app.GetDeviceState() != kDeviceStateIdle || !app.CanEnterSleepMode()) {
+            display_->CloseMenu();
+            return true;
+        }
+        display_->HandleMenuAction(action);
+        return true;
     }
 
     // Arms the guard for a press that is about to wake the device. The deadline
@@ -415,11 +431,15 @@ private:
         auto up = adc_button_[kAdcButtonUp];
         up->OnClick([this]() {
             if (KeyEventsBlocked()) return;
-            Application::GetInstance().Schedule([this]() { ChangeVolume(10); });
+            Application::GetInstance().Schedule([this]() {
+                if (ConsumeMenuKey(PassportDisplay::MenuAction::kUp)) return;
+                ChangeVolume(10);
+            });
         });
         up->OnLongPress([this]() {
             if (KeyEventsBlocked()) return;
             Application::GetInstance().Schedule([this]() {
+                if (ConsumeMenuKey(PassportDisplay::MenuAction::kIgnore)) return;
                 GetAudioCodec()->SetOutputVolume(100);
                 GetDisplay()->ShowNotification(Lang::Strings::MAX_VOLUME);
             });
@@ -428,11 +448,15 @@ private:
         auto down = adc_button_[kAdcButtonDown];
         down->OnClick([this]() {
             if (KeyEventsBlocked()) return;
-            Application::GetInstance().Schedule([this]() { ChangeVolume(-10); });
+            Application::GetInstance().Schedule([this]() {
+                if (ConsumeMenuKey(PassportDisplay::MenuAction::kDown)) return;
+                ChangeVolume(-10);
+            });
         });
         down->OnLongPress([this]() {
             if (KeyEventsBlocked()) return;
             Application::GetInstance().Schedule([this]() {
+                if (ConsumeMenuKey(PassportDisplay::MenuAction::kIgnore)) return;
                 GetAudioCodec()->SetOutputVolume(0);
                 GetDisplay()->ShowNotification(Lang::Strings::MUTED);
             });
@@ -442,6 +466,7 @@ private:
         ok->OnClick([this]() {
             if (KeyEventsBlocked()) return;
             Application::GetInstance().Schedule([this]() {
+                if (ConsumeMenuKey(PassportDisplay::MenuAction::kConfirm)) return;
                 // Opening the audio channel with the network down would only
                 // raise an error alert, so show the ordinary "connecting" hint
                 // instead. Covers a wake from soft sleep as well as a link that
@@ -452,6 +477,21 @@ private:
                     return;
                 }
                 ToggleChat();
+            });
+        });
+        // Held for the button component's 2 s threshold. Opens the settings
+        // list only from idle; the same hold closes it. The wake-key guard
+        // above drops the hold that brings the device out of soft sleep.
+        ok->OnLongPress([this]() {
+            if (KeyEventsBlocked()) return;
+            Application::GetInstance().Schedule([this]() {
+                if (ConsumeMenuKey(PassportDisplay::MenuAction::kClose)) return;
+                auto& app = Application::GetInstance();
+                if (display_ == nullptr || app.GetDeviceState() != kDeviceStateIdle ||
+                    !app.CanEnterSleepMode()) {
+                    return;
+                }
+                display_->OpenMenu();
             });
         });
 
@@ -547,10 +587,10 @@ private:
         esp_lcd_panel_disp_on_off(panel, true);
 
         panel_ = panel;
-        display_ = new SpiLcdDisplay(panel_io, panel,
-                                     DISPLAY_WIDTH, DISPLAY_HEIGHT,
-                                     DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
-                                     DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        display_ = new PassportDisplay(panel_io, panel,
+                                       DISPLAY_WIDTH, DISPLAY_HEIGHT,
+                                       DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
+                                       DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
     }
 
     void WakeUpPowerSaveTimer() {
@@ -677,6 +717,9 @@ private:
         // Calling EnableInput(false) from here would be undone by the next read.
         Application::GetInstance().GetAudioService().EnableWakeWordDetection(false);
 
+        if (display_ != nullptr) {
+            display_->CloseMenu();
+        }
         SleepPanel();
         GetBacklight()->SetBrightness(0);
         SetStandbyClock(true);
@@ -779,6 +822,9 @@ private:
             return;
         }
         deep_sleep_started_ = true;
+        if (display_ != nullptr) {
+            display_->CloseMenu();
+        }
 
         ESP_LOGI(TAG, "Idle %ds: entering deep sleep, wake on any key", kDeepSleepSeconds);
 
