@@ -46,21 +46,55 @@ Pin mapping follows `ai-passport/components/bsp/include/bsp_pins.h`:
 
 ## Build
 
-This directory has one variant. The append in `config.json` selects 8 MB flash
-(`partitions/v2/8m.csv`), the USB Serial/JTAG console, wake word off, and
-`CONFIG_PM_ENABLE` (needed for the soft-sleep clock drop):
+Firmware is built by GitHub Actions, not by a local or cloud-agent ESP-IDF
+install. `.github/workflows/ai-passport.yml` runs on every pull request and
+push to `main`, in the `espressif/idf:v6.1` container:
+
+1. `python -m unittest discover -s scripts/tests -v`
+2. `python scripts/build.py folotoy/ai-passport --name ai-passport`
+3. A size report: flash usage, DRAM usage, IRAM usage, and firmware size
+4. Two artifacts (see below)
+
+`config.json` stays ESP32-C3, 8 MB flash (`partitions/v2/8m.csv`), no PSRAM,
+wake word off (`CONFIG_USE_ESP_WAKE_WORD=n`), and `CONFIG_PM_ENABLE=y`.
+
+The upstream matrix workflow (`.github/workflows/build.yml`) is unchanged. It
+still builds this board only when its files are in the diff, and that job
+uploads `merged-binary.bin` alone. Use the **Build AI Passport** workflow for
+the size report and both flash sets.
+
+### Download the artifacts
+
+On the pull request, open **Checks**, then the **Build AI Passport** run.
+The run summary lists two artifacts named with the commit SHA:
+
+| Artifact | What is in it | When to use it |
+| --- | --- | --- |
+| `ai-passport-recovery-<sha>` | `merged-binary.bin` | Full flash / recovery. One image from `0x0`. |
+| `ai-passport-incremental-<sha>` | `bootloader.bin`, `partition-table.bin`, `app.bin`, `assets.bin`, `flash_args` | Dev updates. Writes only those offsets, so the rest of the 8 MB (including any vendor-reserved gap) is left alone. |
+
+Both zips also contain `passport-size-report.txt`. DRAM remain in that report
+is the linker's static heap estimate, not a measured free-heap value. There is
+no checked-in size baseline yet, so a growth-versus-previous-build failure is
+not armed. The job still fails if the app image exceeds the `ota_0` partition
+(`0x2f0000`), the assets image exceeds 2 MB, or static DRAM/IRAM remain falls
+below the ceilings in `scripts/passport_firmware_report.py`.
+
+From the recovery directory:
 
 ```sh
-python scripts/build.py folotoy/ai-passport --name ai-passport
+esptool.py --chip esp32c3 -p PORT write_flash 0x0 merged-binary.bin
 ```
 
-The script writes `build/merged-binary.bin`. With the ESP-IDF environment still
-exported, flash and watch the USB Serial/JTAG console (the port is the badge's
-USB device):
+From the incremental directory (the `flash_args` file already lists the offsets):
 
 ```sh
-idf.py -p PORT flash monitor
+esptool.py --chip esp32c3 -p PORT write_flash @flash_args
 ```
+
+`PORT` is the badge's USB Serial/JTAG device. A local ESP-IDF checkout is only
+needed if you want to compile or flash on your own machine. The same build
+command is `python scripts/build.py folotoy/ai-passport --name ai-passport`.
 
 ## Display
 

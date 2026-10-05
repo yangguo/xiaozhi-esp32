@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "known": false,
+  "note": "No measured AI Passport image is recorded yet. The delta gate stays off until known is true and the byte fields below are copied from a CI size report. Absolute ceilings still apply.",
+  "dram_used_bytes": null,
+  "iram_used_bytes": null,
+  "flash_used_bytes": null,
+  "firmware_bytes": null,
+  "max_dram_increase_bytes": 8192,
+  "max_iram_increase_bytes": 2048,
+  "max_flash_increase_bytes": 65536,
+  "max_firmware_increase_bytes": 65536
+}
