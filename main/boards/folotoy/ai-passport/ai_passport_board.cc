@@ -218,10 +218,34 @@ private:
 
 class AiPassportBoard : public WifiBoard {
 private:
+    // Closes the settings list whenever the device leaves idle. Application
+    // calls Led::OnStateChanged on the main loop for every state change
+    // (connecting, listening, speaking, notifying), which is the board hook
+    // that does not require editing Application. An empty chat line and a
+    // notify sound before any subtitle take this path.
+    class MenuCloseLed : public Led {
+    public:
+        explicit MenuCloseLed(AiPassportBoard* board) : board_(board) {}
+
+        void OnStateChanged() override {
+            auto* display = board_->display_;
+            if (display == nullptr || !display->IsMenuOpen()) {
+                return;
+            }
+            if (Application::GetInstance().GetDeviceState() != kDeviceStateIdle) {
+                display->CloseMenu();
+            }
+        }
+
+    private:
+        AiPassportBoard* board_;
+    };
+
     i2c_master_bus_handle_t codec_i2c_bus_;
     PassportAdcButton* adc_button_[kAdcButtonNum];
     adc_oneshot_unit_handle_t adc_handle_ = nullptr;
     PassportDisplay* display_;
+    MenuCloseLed menu_led_{this};
     esp_lcd_panel_handle_t panel_ = nullptr;
     Cw2017BatteryMonitor* battery_;
     // Board-owned handle for the terminal ES8311 suspend sequence. The codec has
@@ -1098,6 +1122,10 @@ public:
 
     virtual Display* GetDisplay() override {
         return display_;
+    }
+
+    virtual Led* GetLed() override {
+        return &menu_led_;
     }
 
     virtual Backlight* GetBacklight() override {

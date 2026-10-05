@@ -23,6 +23,7 @@ public:
     void SetupUI() override;
     void SetTheme(Theme* theme) override;
     void SetChatMessage(const char* role, const char* content) override;
+    void UpdateStatusBar(bool update_all = false) override;
 
     bool IsMenuOpen() const;
     void OpenMenu();
@@ -48,6 +49,9 @@ private:
     void LoadBrightness();
     void AdjustBrightness(int delta);
     void ToggleTheme();
+    // Caller holds the LVGL lock. Hides the panel, then marks the list closed.
+    void HideMenuLocked();
+    bool LowBatteryPopupVisible() const;
 
     lv_obj_t* menu_panel_ = nullptr;
     lv_obj_t* menu_label_ = nullptr;

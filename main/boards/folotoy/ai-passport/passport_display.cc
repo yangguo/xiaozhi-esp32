@@ -13,6 +13,11 @@
 
 #define TAG "PassportDisp"
 
+// Matches AiPassportBoard::kDimBrightness. The dim stage writes this level
+// without the permanent flag, so a live backlight reading of 10% is not the
+// user's brightness unless display/brightness is also 10.
+static constexpr int kTemporaryDimBrightness = 10;
+
 namespace {
 
 bool UiInChinese() { return Lang::CODE[0] == 'z' && Lang::CODE[1] == 'h'; }
@@ -91,11 +96,29 @@ void PassportDisplay::SetTheme(Theme* theme) {
 
 void PassportDisplay::SetChatMessage(const char* role, const char* content) {
     (void)role;
-    // A conversation has something to show. Drop the list so it cannot cover it.
+    // Leaving idle closes the list from the board LED hook, including an empty
+    // system line and notify audio before any subtitle. A non-empty message
+    // still closes it when the device stays idle (an alert does that).
     if (page_ != Page::kClosed && content != nullptr && content[0] != '\0') {
         CloseMenu();
     }
     LcdDisplay::SetChatMessage(role, content);
+}
+
+void PassportDisplay::UpdateStatusBar(bool update_all) {
+    LcdDisplay::UpdateStatusBar(update_all);
+    if (page_ == Page::kClosed || low_battery_popup_ == nullptr) {
+        return;
+    }
+    DisplayLockGuard lock(this);
+    if (!lock) {
+        return;
+    }
+    if (!LowBatteryPopupVisible()) {
+        return;
+    }
+    HideMenuLocked();
+    ESP_LOGI(TAG, "Settings list closed for low battery");
 }
 
 bool PassportDisplay::IsMenuOpen() const { return page_ != Page::kClosed; }
@@ -109,17 +132,19 @@ void PassportDisplay::EnsureMenu() {
         return;
     }
 
-    // Leave the status row visible. The glass corners are outside this padding,
-    // so the text stays off the masked pixels.
+    // Leave the status row visible. This panel still covers the lower glass,
+    // including the bottom rounded corners. Left, right, and bottom padding
+    // stay at least PASSPORT_SCREEN_RADIUS so the text sits inside the visible
+    // area. The top of the panel starts below the upper corner band.
     menu_panel_ = lv_obj_create(lv_screen_active());
     lv_obj_set_size(menu_panel_, width_, height_ > 48 ? height_ - 48 : height_);
     lv_obj_align(menu_panel_, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_set_style_radius(menu_panel_, 0, 0);
     lv_obj_set_style_border_width(menu_panel_, 0, 0);
     lv_obj_set_style_pad_top(menu_panel_, 12, 0);
-    lv_obj_set_style_pad_bottom(menu_panel_, 24, 0);
-    lv_obj_set_style_pad_left(menu_panel_, 24, 0);
-    lv_obj_set_style_pad_right(menu_panel_, 24, 0);
+    lv_obj_set_style_pad_bottom(menu_panel_, PASSPORT_SCREEN_RADIUS, 0);
+    lv_obj_set_style_pad_left(menu_panel_, PASSPORT_SCREEN_RADIUS, 0);
+    lv_obj_set_style_pad_right(menu_panel_, PASSPORT_SCREEN_RADIUS, 0);
     lv_obj_set_scrollbar_mode(menu_panel_, LV_SCROLLBAR_MODE_OFF);
     lv_obj_remove_flag(menu_panel_, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(menu_panel_, LV_OBJ_FLAG_HIDDEN);
@@ -163,10 +188,31 @@ void PassportDisplay::LoadBrightness() {
     if (saved > 100) {
         saved = 100;
     }
-    brightness_ = static_cast<int>(saved);
+
+    const int saved_level = static_cast<int>(saved);
+    auto* backlight = Board::GetInstance().GetBacklight();
+    if (backlight == nullptr) {
+        brightness_ = saved_level;
+        return;
+    }
+    const int live = backlight->brightness();
+    // MCP writes display/brightness, then the backlight fades toward it. The
+    // 60 s dim forces kTemporaryDimBrightness and soft sleep forces 0, neither
+    // of which is stored. While the live level is one of those, or still
+    // fading, the next ±10 step uses the saved value.
+    const bool temporary_dim =
+        live == kTemporaryDimBrightness && saved_level != kTemporaryDimBrightness;
+    const bool backlight_off = live <= 0;
+    const bool fading = live != saved_level;
+    if (temporary_dim || backlight_off || fading) {
+        brightness_ = saved_level;
+        return;
+    }
+    brightness_ = live;
 }
 
 void PassportDisplay::AdjustBrightness(int delta) {
+    LoadBrightness();
     int next = brightness_ + delta;
     if (next < 10) {
         next = 10;
@@ -237,6 +283,13 @@ void PassportDisplay::RenderMenu() {
     if (!lock) {
         return;
     }
+    // The low-battery popup is a sibling. Raising the list would cover it,
+    // so drop the list instead and leave the popup on top.
+    if (LowBatteryPopupVisible()) {
+        HideMenuLocked();
+        ESP_LOGI(TAG, "Settings list closed for low battery");
+        return;
+    }
     lv_label_set_text(menu_label_, text.c_str());
     lv_obj_remove_flag(menu_panel_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(menu_panel_);
@@ -250,22 +303,40 @@ void PassportDisplay::OpenMenu() {
     menu_index_ = 0;
     LoadBrightness();
     RenderMenu();
+    if (page_ == Page::kClosed) {
+        return;
+    }
     ESP_LOGI(TAG, "Settings list open");
+}
+
+bool PassportDisplay::LowBatteryPopupVisible() const {
+    return low_battery_popup_ != nullptr &&
+           !lv_obj_has_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
+}
+
+void PassportDisplay::HideMenuLocked() {
+    if (menu_panel_ != nullptr) {
+        lv_obj_add_flag(menu_panel_, LV_OBJ_FLAG_HIDDEN);
+    }
+    page_ = Page::kClosed;
 }
 
 void PassportDisplay::CloseMenu() {
     if (page_ == Page::kClosed) {
         return;
     }
-    page_ = Page::kClosed;
     if (menu_panel_ == nullptr) {
+        page_ = Page::kClosed;
         return;
     }
     DisplayLockGuard lock(this);
     if (!lock) {
+        // Leave page_ open so a later close retries. Clearing it first would
+        // report the list shut while the panel is still on screen.
+        ESP_LOGW(TAG, "Display lock unavailable, settings list stays open");
         return;
     }
-    lv_obj_add_flag(menu_panel_, LV_OBJ_FLAG_HIDDEN);
+    HideMenuLocked();
     ESP_LOGI(TAG, "Settings list closed");
 }
 

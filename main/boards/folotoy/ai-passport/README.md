@@ -94,14 +94,21 @@ Hold OK while idle and not in a conversation. The list is drawn on top of the
 existing chat screen (it does not replace that screen):
 
 - **Brightness** — up/down steps by 10, from 10% to 100%, and saves the existing
-  `display` / `brightness` NVS value. The 60 s dim still calls `SetBrightness`
-  without the permanent flag, so it does not overwrite this.
+  `display` / `brightness` NVS value. Opening the brightness page and each step
+  re-read the backlight, but a temporary dim (10%) or a fade that has not
+  reached the saved value is ignored so it is not stored. The 60 s dim still
+  calls `SetBrightness` without the permanent flag.
 - **Theme** — short OK toggles light and dark and saves the existing `display` /
   `theme` key.
 - **Back** — short OK closes the list. Holding OK also closes it from any page.
 
 While the list is open, up/down do not change the volume. They do again once it
-closes. A chat message closes the list. Soft sleep and deep sleep close it too.
+closes. Leaving idle closes the list: connecting, listening, speaking, and
+notify, including an empty system line and notify audio before any subtitle.
+A non-empty chat message also closes it while the device stays idle. Soft
+sleep and deep sleep close it too. A low-battery popup closes it so the
+warning is not drawn under the overlay. Text padding is at least the 30 px
+glass radius, so the labels stay off the masked bottom corners.
 
 The list has no timer of its own. Key presses still reset `PowerSaveTimer`, and
 leaving the list up still dims at 60 s and soft-sleeps at 360 s. A separate
