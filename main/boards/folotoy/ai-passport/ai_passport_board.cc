@@ -1,5 +1,5 @@
 #include "wifi_board.h"
-#include "display/lcd_display.h"
+#include "passport_display.h"
 #include "codecs/es8311_audio_codec.h"
 #include "application.h"
 #include "button.h"
@@ -37,7 +37,7 @@ enum {
 // ============================================================================
 // Idle power policy: three stages, each counted from the last key press.
 //
-//     60 s    the backlight drops to kDimBrightness; nothing else changes
+//     60 s    the backlight drops to kPassportDimBrightness; nothing else changes
 //    360 s    screen and codec off, CPU down-clocked - the "soft sleep" stage
 //   2160 s    deep sleep, entered from the soft-sleep stage as a fallback
 //
@@ -69,7 +69,9 @@ enum {
 // hour, so a forgotten Passport does not flatten its cell overnight.
 // ============================================================================
 
-// Backlight drops to kDimBrightness this long after the last input.
+// Backlight drops to kPassportDimBrightness this long after the last input.
+// That level lives in passport_display.h so the settings list can recognize a
+// temporary dim. A backlight already at or below it is left alone.
 static constexpr int kDimSeconds = 60;
 // Screen, codec and CPU down this long after the last input.
 static constexpr int kSoftSleepSeconds = 360;
@@ -78,8 +80,6 @@ static constexpr int kDeepSleepSeconds = 2160;
 // PowerSaveTimer counts the fallback from the soft-sleep deadline rather than
 // from the last input.
 static constexpr int kDeepSleepAfterSoftSleepTicks = kDeepSleepSeconds - kSoftSleepSeconds;
-// Dim level in percent. A display already at or below it is left alone.
-static constexpr int kDimBrightness = 10;
 // Safety net for the wake-key guard. The guard itself ends when the press that
 // woke the device finishes, so this only bounds a release event that never
 // arrives, or a key that is stuck down.
@@ -218,10 +218,34 @@ private:
 
 class AiPassportBoard : public WifiBoard {
 private:
+    // Closes the settings list whenever the device leaves idle. There is no
+    // status LED; GetLed() exists so Application's existing OnStateChanged
+    // call can reach this board. That call also runs inside StartNotification
+    // before the popup sound, because the state event itself is handled on
+    // the next main-loop turn. An empty chat line still takes this path.
+    class MenuCloseLed : public Led {
+    public:
+        explicit MenuCloseLed(AiPassportBoard* board) : board_(board) {}
+
+        void OnStateChanged() override {
+            auto* display = board_->display_;
+            if (display == nullptr || !display->IsMenuOpen()) {
+                return;
+            }
+            if (Application::GetInstance().GetDeviceState() != kDeviceStateIdle) {
+                display->CloseMenu();
+            }
+        }
+
+    private:
+        AiPassportBoard* board_;
+    };
+
     i2c_master_bus_handle_t codec_i2c_bus_;
     PassportAdcButton* adc_button_[kAdcButtonNum];
     adc_oneshot_unit_handle_t adc_handle_ = nullptr;
-    LcdDisplay* display_;
+    PassportDisplay* display_;
+    MenuCloseLed menu_led_{this};
     esp_lcd_panel_handle_t panel_ = nullptr;
     Cw2017BatteryMonitor* battery_;
     // Board-owned handle for the terminal ES8311 suspend sequence. The codec has
@@ -260,6 +284,22 @@ private:
     // stop waking the device - only the actions of the wake press are held back.
     bool KeyEventsBlocked() const {
         return wake_key_guard_ && esp_timer_get_time() < wake_key_guard_until_us_;
+    }
+
+    // Settings list, when open, owns UP/DOWN/OK. It has no sleep timer of its
+    // own: press-down still resets PowerSaveTimer, and a conversation or the
+    // soft-sleep stage closes the list instead of leaving it on top.
+    bool ConsumeMenuKey(PassportDisplay::MenuAction action) {
+        if (display_ == nullptr || !display_->IsMenuOpen()) {
+            return false;
+        }
+        auto& app = Application::GetInstance();
+        if (app.GetDeviceState() != kDeviceStateIdle || !app.CanEnterSleepMode()) {
+            display_->CloseMenu();
+            return true;
+        }
+        display_->HandleMenuAction(action);
+        return true;
     }
 
     // Arms the guard for a press that is about to wake the device. The deadline
@@ -415,11 +455,15 @@ private:
         auto up = adc_button_[kAdcButtonUp];
         up->OnClick([this]() {
             if (KeyEventsBlocked()) return;
-            Application::GetInstance().Schedule([this]() { ChangeVolume(10); });
+            Application::GetInstance().Schedule([this]() {
+                if (ConsumeMenuKey(PassportDisplay::MenuAction::kUp)) return;
+                ChangeVolume(10);
+            });
         });
         up->OnLongPress([this]() {
             if (KeyEventsBlocked()) return;
             Application::GetInstance().Schedule([this]() {
+                if (ConsumeMenuKey(PassportDisplay::MenuAction::kIgnore)) return;
                 GetAudioCodec()->SetOutputVolume(100);
                 GetDisplay()->ShowNotification(Lang::Strings::MAX_VOLUME);
             });
@@ -428,11 +472,15 @@ private:
         auto down = adc_button_[kAdcButtonDown];
         down->OnClick([this]() {
             if (KeyEventsBlocked()) return;
-            Application::GetInstance().Schedule([this]() { ChangeVolume(-10); });
+            Application::GetInstance().Schedule([this]() {
+                if (ConsumeMenuKey(PassportDisplay::MenuAction::kDown)) return;
+                ChangeVolume(-10);
+            });
         });
         down->OnLongPress([this]() {
             if (KeyEventsBlocked()) return;
             Application::GetInstance().Schedule([this]() {
+                if (ConsumeMenuKey(PassportDisplay::MenuAction::kIgnore)) return;
                 GetAudioCodec()->SetOutputVolume(0);
                 GetDisplay()->ShowNotification(Lang::Strings::MUTED);
             });
@@ -442,6 +490,7 @@ private:
         ok->OnClick([this]() {
             if (KeyEventsBlocked()) return;
             Application::GetInstance().Schedule([this]() {
+                if (ConsumeMenuKey(PassportDisplay::MenuAction::kConfirm)) return;
                 // Opening the audio channel with the network down would only
                 // raise an error alert, so show the ordinary "connecting" hint
                 // instead. Covers a wake from soft sleep as well as a link that
@@ -452,6 +501,21 @@ private:
                     return;
                 }
                 ToggleChat();
+            });
+        });
+        // Held for the button component's 2 s threshold. Opens the settings
+        // list only from idle; the same hold closes it. The wake-key guard
+        // above drops the hold that brings the device out of soft sleep.
+        ok->OnLongPress([this]() {
+            if (KeyEventsBlocked()) return;
+            Application::GetInstance().Schedule([this]() {
+                if (ConsumeMenuKey(PassportDisplay::MenuAction::kClose)) return;
+                auto& app = Application::GetInstance();
+                if (display_ == nullptr || app.GetDeviceState() != kDeviceStateIdle ||
+                    !app.CanEnterSleepMode()) {
+                    return;
+                }
+                display_->OpenMenu();
             });
         });
 
@@ -547,10 +611,10 @@ private:
         esp_lcd_panel_disp_on_off(panel, true);
 
         panel_ = panel;
-        display_ = new SpiLcdDisplay(panel_io, panel,
-                                     DISPLAY_WIDTH, DISPLAY_HEIGHT,
-                                     DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
-                                     DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        display_ = new PassportDisplay(panel_io, panel,
+                                       DISPLAY_WIDTH, DISPLAY_HEIGHT,
+                                       DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
+                                       DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
     }
 
     void WakeUpPowerSaveTimer() {
@@ -607,10 +671,10 @@ private:
         // sleep enabled, which is deliberately not used here).
         power_save_timer_ = new PowerSaveTimer(-1, kDimSeconds, kSoftSleepSeconds);
         power_save_timer_->OnEnterSleepMode([this]() {
-            ESP_LOGI(TAG, "Idle %ds: backlight to %d%%", kDimSeconds, kDimBrightness);
+            ESP_LOGI(TAG, "Idle %ds: backlight to %d%%", kDimSeconds, kPassportDimBrightness);
             auto* backlight = GetBacklight();
-            if (backlight != nullptr && backlight->brightness() > kDimBrightness) {
-                backlight->SetBrightness(kDimBrightness);
+            if (backlight != nullptr && backlight->brightness() > kPassportDimBrightness) {
+                backlight->SetBrightness(kPassportDimBrightness);
             }
         });
         // PowerSaveTimer::WakeUp() runs on the esp_timer task because the button
@@ -677,6 +741,9 @@ private:
         // Calling EnableInput(false) from here would be undone by the next read.
         Application::GetInstance().GetAudioService().EnableWakeWordDetection(false);
 
+        if (display_ != nullptr) {
+            display_->CloseMenu();
+        }
         SleepPanel();
         GetBacklight()->SetBrightness(0);
         SetStandbyClock(true);
@@ -779,6 +846,9 @@ private:
             return;
         }
         deep_sleep_started_ = true;
+        if (display_ != nullptr) {
+            display_->CloseMenu();
+        }
 
         ESP_LOGI(TAG, "Idle %ds: entering deep sleep, wake on any key", kDeepSleepSeconds);
 
@@ -1052,6 +1122,10 @@ public:
 
     virtual Display* GetDisplay() override {
         return display_;
+    }
+
+    virtual Led* GetLed() override {
+        return &menu_led_;
     }
 
     virtual Backlight* GetBacklight() override {

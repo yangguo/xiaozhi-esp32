@@ -3,6 +3,31 @@
 Board definition that lets the XiaoZhi voice assistant run on the
 [FoloToy AI Passport](https://github.com/FoloToy/ai-passport) wearable.
 
+## Capabilities
+
+What this board actually has:
+
+- **No camera.** `GetCamera()` is the base implementation.
+- **No status LED.** Nothing is wired to a GPIO LED. `GetLed()` is not
+  `NoLed`: it returns a hook whose only job is to close the settings list
+  when the device leaves idle, including immediately before a notification
+  popup. It does not blink or drive a pin.
+- **No acoustic echo cancellation.** Device-side and server-side AEC both need the
+  PSRAM audio-processor path (ESP32-S3, P4, or S31). This is an ESP32-C3 with no
+  PSRAM, and the board is not on the device-AEC allow list.
+- **No charge detection.** CW2017 does not report charging, and no charger GPIO
+  is wired. When the gauge answers, `GetBatteryLevel()` reports `charging = false`
+  and `discharging = true`. A missing gauge hides the battery icon; the board
+  still runs. Do not invent a charging GPIO.
+- **Wake word off by default.** `config.json` sets `CONFIG_USE_ESP_WAKE_WORD=n`.
+  Leave it off. Turning it on costs about 60 KB of heap (the lowest free heap
+  was measured at 9.8 KB) and disagrees with soft sleep, which releases the
+  microphone only because nothing is still listening for a wake word.
+- **Rounded glass, masked in the flush.** A 30 px corner radius is applied to the
+  RGB565 buffer. There is no LVGL clip-corner layer. See Display below.
+- **One idle-power policy.** Dim at 60 s, soft sleep at 360 s, deep sleep at
+  2160 s, all on `PowerSaveTimer`. There is no second screen-idle timer.
+
 ## Hardware
 
 - MCU: ESP32-C3, 8 MB flash, **no PSRAM**, USB Serial/JTAG console
@@ -24,28 +49,121 @@ Pin mapping follows `ai-passport/components/bsp/include/bsp_pins.h`:
 
 ## Build
 
+Firmware is built by GitHub Actions, not by a local or cloud-agent ESP-IDF
+install. `.github/workflows/ai-passport.yml` runs on every pull request and
+push to `main`, in the `espressif/idf:v6.1` container:
+
+1. `python -m unittest discover -s scripts/tests -v`
+2. `python scripts/build.py folotoy/ai-passport --name ai-passport`
+3. A size report: flash usage (Flash Code + Flash Data), DRAM usage, IRAM when `idf.py size` prints an IRAM row, and firmware size
+4. Two artifacts (see below)
+
+`config.json` stays ESP32-C3, 8 MB flash (`partitions/v2/8m.csv`), no PSRAM,
+wake word off (`CONFIG_USE_ESP_WAKE_WORD=n`), and `CONFIG_PM_ENABLE=y`.
+
+The upstream matrix workflow (`.github/workflows/build.yml`) is unchanged. It
+still builds this board only when its files are in the diff, and that job
+uploads `merged-binary.bin` alone. Use the **Build AI Passport** workflow for
+the size report and both flash sets.
+
+### Download the artifacts
+
+On the pull request, open **Checks**, then the **Build AI Passport** run.
+The run summary lists two artifacts named with the commit SHA:
+
+| Artifact | What is in it | When to use it |
+| --- | --- | --- |
+| `ai-passport-recovery-<sha>` | `merged-binary.bin` | Full flash / recovery. One image from `0x0`. |
+| `ai-passport-incremental-<sha>` | `bootloader.bin`, `partition-table.bin`, `app.bin`, `assets.bin`, `flash_args` | Dev updates. Writes only those offsets, so the rest of the 8 MB (including any vendor-reserved gap) is left alone. |
+
+Both zips also contain `passport-size-report.txt`. DRAM remain in that report
+is the linker's static heap estimate, not a measured free-heap value.
+`scripts/passport_size_baseline.json` records the first green image
+(Actions run 37334194292) and fails the job if DRAM used grows by more than
+8 KiB, or flash usage or the app image grows by more than 64 KiB. IRAM stays
+null because this ESP32-C3 summary has no IRAM row, so there is no IRAM growth
+gate. The job also fails if the app image exceeds the `ota_0` partition
+(`0x2f0000`), the assets image exceeds 2 MB, or static DRAM remain falls
+below the ceiling in `scripts/passport_firmware_report.py`. The IRAM remain
+gate applies only when IRAM figures are present.
+
+From the recovery directory:
+
 ```sh
-python scripts/build.py folotoy/ai-passport --name ai-passport
+python -m esptool --chip esp32c3 -p PORT write-flash 0x0 merged-binary.bin
 ```
 
-Outputs `build/merged-binary.bin` (8 MB flash, USB Serial/JTAG console).
+From the incremental directory (the `flash_args` file already lists the offsets):
+
+```sh
+python -m esptool --chip esp32c3 -p PORT write-flash @flash_args
+```
+
+`PORT` is the badge's USB Serial/JTAG device. A local ESP-IDF checkout is only
+needed if you want to compile or flash on your own machine. The same build
+command is `python scripts/build.py folotoy/ai-passport --name ai-passport`.
+
+## Display
+
+The panel is a 240×320 portrait ST7789P3 behind glass with a 30 px corner
+radius. That radius is the value from the official FoloToy adapter
+(`lvgl_screen_rounding`, `BSP_LVGL_SCREEN_RADIUS`). `PassportDisplay` registers
+an `LV_EVENT_FLUSH_START` callback and zeros RGB565 pixels outside the radius
+before the strip is sent. The math lives in `screen_rounding.c`.
+
+LVGL `clip_corner` is not used. It allocates a full-screen ARGB layer, which
+does not fit this C3. The mask adds no frame buffer and does not change the
+dim, soft-sleep, or deep-sleep panel sequence. Confirm on hardware that the
+black pixels sit under the bezel rather than eating the status icons; adjust
+`PASSPORT_SCREEN_RADIUS` if the glass is different.
 
 ## Controls
 
 The three physical keys map to XiaoZhi's voice-assistant actions:
 
 - **OK** — single click: toggle the chat state (or enter Wi-Fi config mode
-  while starting up)
+  while starting up). Hold about 2 s while idle: open or close the settings list
 - **UP** — single click: volume +10; long press: max volume
 - **DOWN** — single click: volume -10; long press: mute
 
 Because the ladder shares one ADC pin, XiaoZhi reads it as three
 independent ADC buttons (the same pattern as the ESP-BOX-Lite).
 
+### Settings list
+
+Hold OK while idle and not in a conversation. The list is drawn on top of the
+existing chat screen (it does not replace that screen):
+
+- **Brightness** — up/down steps by 10, from 10% to 100%, and saves the existing
+  `display` / `brightness` NVS value. Opening the brightness page and each step
+  re-read the backlight, but a temporary dim (10%) or a fade that has not
+  reached the saved value is ignored so it is not stored. The 60 s dim still
+  calls `SetBrightness` without the permanent flag.
+- **Theme** — short OK toggles light and dark and saves the existing `display` /
+  `theme` key.
+- **Back** — short OK closes the list. Holding OK also closes it from any page.
+
+While the list is open, up/down do not change the volume. They do again once it
+closes. Leaving idle closes the list: connecting, listening, speaking, and
+notify. A notification closes it before the popup sound starts, not on the
+following loop turn. An empty system line still closes it, as does notify
+audio that has not yet shown a subtitle.
+A non-empty chat message also closes it while the device stays idle. Soft
+sleep and deep sleep close it too. A low-battery popup closes it so the
+warning is not drawn under the overlay. Text padding is at least the 30 px
+glass radius, so the labels stay off the masked bottom corners.
+
+The list has no timer of its own. Key presses still reset `PowerSaveTimer`, and
+leaving the list up still dims at 60 s and soft-sleeps at 360 s. A separate
+"screen off after 3 minutes, but keep listening" timer is intentionally not
+added: it would race this policy, and it would blank the panel during
+listening, which `CanEnterSleepMode()` does not allow. Wake word stays off.
+
 ## Power management
 
 The Passport is a battery wearable, so the board gives up power in three stages,
-all counted from the last key press:
+all counted from the last key press. The settings list does not add another
+deadline and does not disable these stages:
 
 | Idle | Stage | What happens |
 | --- | --- | --- |
@@ -53,8 +171,10 @@ all counted from the last key press:
 | 360 s | Soft sleep | Panel Sleep In, backlight off, codec off, CPU down-clocked to 40 MHz |
 | 2160 s | Deep sleep | Entered from the soft-sleep stage; any key wakes the device through GPIO0 and restarts the application |
 
-`kDimSeconds`, `kSoftSleepSeconds`, `kDeepSleepSeconds`, `kDimBrightness` and
-`kStandbyCpuMinFreq` at the top of `ai_passport_board.cc` tune the policy. Three
+`kDimSeconds`, `kSoftSleepSeconds`, `kDeepSleepSeconds`, and `kStandbyCpuMinFreq`
+at the top of `ai_passport_board.cc` tune the policy. The dim level is
+`kPassportDimBrightness` in `passport_display.h`, shared with the settings
+list. Three
 properties of this shape are deliberate:
 
 - **The soft-sleep stage is shallow on purpose.** It draws roughly 20 mA, which
@@ -247,7 +367,10 @@ move the three deadlines off the `skip_unhandled_events` timer first.
 - Display orientation, color inversion and the backlight PWM polarity were
   taken from the Passport BSP; verify on real hardware and adjust the
   `DISPLAY_*` macros in `config.h` if the image is rotated/inverted or the
-  backlight is reversed.
+  backlight is reversed. The 30 px corner mask is the official adapter's radius
+  and still needs a visual check on the glass.
+- The settings list is brightness and theme only. It does not add Wi-Fi,
+  restart, or a pixel portrait, and it does not enable the wake word.
 - The ADC button voltage windows assume the Passport's external 10 kOhm
   pull-up. Re-measure with the Button page if thresholds drift.
 - CW2017 presence is optional; without the chip the status bar shows no

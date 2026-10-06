@@ -1,0 +1,57 @@
+# Dedicated AI Passport build. The upstream matrix in build.yml is unchanged
+# and only uploads merged-binary.bin for boards it selects. This workflow
+# always builds folotoy/ai-passport in espressif/idf:v6.1, checks static
+# memory, and publishes a full recovery image plus an incremental flash set.
+name: Build AI Passport
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build AI Passport
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v6.1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Run tests
+        run: python -m unittest discover -s scripts/tests -v
+
+      - name: Build AI Passport
+        shell: bash
+        run: |
+          source "$IDF_PATH/export.sh"
+          python scripts/build.py folotoy/ai-passport --name ai-passport
+
+      - name: Firmware size check
+        id: size
+        shell: bash
+        run: |
+          source "$IDF_PATH/export.sh"
+          python scripts/passport_firmware_report.py --build-dir build
+
+      - name: Upload full recovery image
+        if: success() || steps.size.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ai-passport-recovery-${{ github.sha }}
+          path: build/passport-artifacts/recovery/
+          if-no-files-found: error
+
+      - name: Upload incremental flash files
+        if: success() || steps.size.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ai-passport-incremental-${{ github.sha }}
+          path: build/passport-artifacts/incremental/
+          if-no-files-found: error

@@ -106,6 +106,19 @@ class CiSelectionTests(unittest.TestCase):
         for paths in ([], ["README.md", "docs/custom-board.md"]):
             self.assertEqual(build._select_variants_for_changes(self.variants, paths), [])
 
+    def test_passport_workflow_does_not_select_the_representative_matrix(self):
+        # The dedicated Passport workflow is not a common-path change. Editing
+        # build.yml still is, and that must keep selecting the reviewed list.
+        selected = build._select_variants_for_changes(
+            self.variants,
+            [
+                ".github/workflows/ai-passport.yml",
+                "scripts/passport_firmware_report.py",
+                "scripts/passport_size_baseline.json",
+            ],
+        )
+        self.assertEqual(selected, [])
+
     def test_missing_duplicate_and_invalid_option_entries_fail(self):
         invalid = copy.deepcopy(self.manifest)
         invalid["variants"][0]["name"] = "removed-variant"

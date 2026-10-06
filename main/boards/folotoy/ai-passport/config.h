@@ -50,6 +50,9 @@
 // ============================================================================
 // Display: ST7789 (ST7789P3) 240x320 portrait, 4-line SPI.
 // MOSI-only (no MISO), reset is a software reset (RST not wired).
+// The glass corners are a 30 px radius (PASSPORT_SCREEN_RADIUS). PassportDisplay
+// blacks those pixels out in the RGB565 flush. Do not enable an LVGL clip-corner
+// layer for this: it allocates a full-screen ARGB buffer, which this C3 cannot spare.
 // ============================================================================
 #define DISPLAY_SPI_SCK_PIN     GPIO_NUM_8
 #define DISPLAY_SPI_MOSI_PIN    GPIO_NUM_9
