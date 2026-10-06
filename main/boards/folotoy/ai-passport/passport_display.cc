@@ -78,11 +78,13 @@ PassportDisplay::PassportDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_pan
 
 void PassportDisplay::SetupUI() {
     LcdDisplay::SetupUI();
+    ApplyGlassSafeArea();
     EnsureMenu();
 }
 
 void PassportDisplay::SetTheme(Theme* theme) {
     LcdDisplay::SetTheme(theme);
+    ApplyGlassSafeArea();
     ApplyMenuTheme();
     if (page_ != Page::kClosed) {
         RenderMenu();
@@ -98,6 +100,191 @@ void PassportDisplay::SetChatMessage(const char* role, const char* content) {
         CloseMenu();
     }
     LcdDisplay::SetChatMessage(role, content);
+    RefreshSubtitlePages();
+}
+
+void PassportDisplay::ClearChatMessages() {
+    LcdDisplay::ClearChatMessages();
+    RefreshSubtitlePages();
+}
+
+void PassportDisplay::ApplyGlassSafeArea() {
+    if (!IsSetupUICalled() || bottom_bar_ == nullptr || chat_message_label_ == nullptr) {
+        return;
+    }
+    DisplayLockGuard lock(this);
+    if (!lock) {
+        return;
+    }
+
+    const lv_font_t* font = lv_obj_get_style_text_font(chat_message_label_, LV_PART_MAIN);
+    int32_t line_height = font != nullptr ? lv_font_get_line_height(font) : 0;
+    if (line_height <= 0) {
+        font = lv_obj_get_style_text_font(lv_screen_active(), LV_PART_MAIN);
+        line_height = font != nullptr ? lv_font_get_line_height(font) : 0;
+    }
+    if (line_height <= 0) {
+        ESP_LOGW(TAG, "Text font has no line height; subtitle viewport unchanged");
+        return;
+    }
+    line_height_ = line_height;
+
+    // Reserve the 32 px collection even when the boot icon is shorter, so the
+    // first emotion image does not land on the subtitle.
+    int32_t emoji_px = kPassportEmojiSize;
+    if (emoji_box_ != nullptr) {
+        lv_obj_update_layout(emoji_box_);
+        const int32_t box_h = lv_obj_get_height(emoji_box_);
+        if (box_h > emoji_px) {
+            emoji_px = box_h;
+        }
+    }
+
+    passport_rect_t safe;
+    passport_rect_t subtitle;
+    if (!passport_glass_safe_rect(width_, height_, PASSPORT_SCREEN_RADIUS, &safe) ||
+        !passport_subtitle_viewport(width_, height_, PASSPORT_SCREEN_RADIUS, line_height,
+                                    (emoji_px + 1) / 2, &subtitle)) {
+        ESP_LOGW(TAG, "Glass safe area does not fit a subtitle line");
+        return;
+    }
+    if (!passport_rect_inside_glass(&safe, width_, height_, PASSPORT_SCREEN_RADIUS) ||
+        !passport_rect_inside_glass(&subtitle, width_, height_, PASSPORT_SCREEN_RADIUS)) {
+        ESP_LOGW(TAG, "Computed subtitle rect is outside the glass mask");
+        return;
+    }
+    safe_rect_ = safe;
+    subtitle_rect_ = subtitle;
+
+    // The corner caps are the rows above and below the safe rect. Icons and
+    // the status line move onto the first full-width row. CLIP replaces the
+    // circular scroll so a long status does not animate on every frame.
+    if (top_bar_ != nullptr) {
+        lv_obj_align(top_bar_, LV_ALIGN_TOP_LEFT, safe.x, safe.y);
+    }
+    if (status_bar_ != nullptr) {
+        lv_obj_align(status_bar_, LV_ALIGN_TOP_LEFT, safe.x, safe.y);
+    }
+    if (status_label_ != nullptr) {
+        lv_label_set_long_mode(status_label_, LV_LABEL_LONG_CLIP);
+    }
+    if (notification_label_ != nullptr) {
+        lv_label_set_long_mode(notification_label_, LV_LABEL_LONG_CLIP);
+    }
+
+    lv_obj_update_layout(lv_screen_active());
+    top_reserve_ = 0;
+    if (status_bar_ != nullptr) {
+        top_reserve_ = lv_obj_get_height(status_bar_);
+    }
+    if (top_bar_ != nullptr && lv_obj_get_height(top_bar_) > top_reserve_) {
+        top_reserve_ = lv_obj_get_height(top_bar_);
+    }
+
+    // Fixed viewport, wrap, and page by scrolling the label. A vertical
+    // LVGL animation would invalidate this region every frame; paging on a
+    // 2.5 s timer redraws only when the page changes. Each TTS sentence
+    // replaces the label text, and RefreshSubtitlePagesLocked starts again
+    // at the top of that sentence.
+    lv_obj_set_pos(bottom_bar_, subtitle.x, subtitle.y);
+    lv_obj_set_size(bottom_bar_, subtitle.width, subtitle.height);
+    lv_obj_set_style_pad_all(bottom_bar_, 0, 0);
+    lv_obj_set_scrollbar_mode(bottom_bar_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_scroll_dir(bottom_bar_, LV_DIR_VER);
+    lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(bottom_bar_, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_remove_flag(bottom_bar_, LV_OBJ_FLAG_SCROLL_MOMENTUM);
+    lv_obj_remove_flag(bottom_bar_, LV_OBJ_FLAG_SCROLL_CHAIN_VER);
+
+    lv_label_set_long_mode(chat_message_label_, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(chat_message_label_, subtitle.width);
+    lv_obj_set_height(chat_message_label_, LV_SIZE_CONTENT);
+    lv_obj_set_style_text_align(chat_message_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(chat_message_label_, LV_ALIGN_TOP_MID, 0, 0);
+    lv_anim_delete(chat_message_label_, nullptr);
+
+    if (low_battery_popup_ != nullptr) {
+        lv_obj_update_layout(low_battery_popup_);
+        const int32_t popup_w = lv_obj_get_width(low_battery_popup_);
+        const int32_t popup_h = lv_obj_get_height(low_battery_popup_);
+        int32_t popup_y = safe.y + safe.height - popup_h;
+        if (popup_y < safe.y) {
+            popup_y = safe.y;
+        }
+        lv_obj_set_pos(low_battery_popup_, safe.x + (safe.width - popup_w) / 2, popup_y);
+    }
+
+    if (subtitle_timer_ == nullptr) {
+        subtitle_timer_ = lv_timer_create(SubtitleTimerCb, kPassportSubtitlePageMs, this);
+        if (subtitle_timer_ != nullptr) {
+            lv_timer_pause(subtitle_timer_);
+        }
+    }
+
+    ESP_LOGI(TAG, "Safe area %ldx%ld at (%ld,%ld), subtitle %ldx%ld at (%ld,%ld), line %ld",
+             static_cast<long>(safe.width), static_cast<long>(safe.height),
+             static_cast<long>(safe.x), static_cast<long>(safe.y),
+             static_cast<long>(subtitle.width), static_cast<long>(subtitle.height),
+             static_cast<long>(subtitle.x), static_cast<long>(subtitle.y),
+             static_cast<long>(line_height));
+    RefreshSubtitlePagesLocked();
+}
+
+void PassportDisplay::RefreshSubtitlePages() {
+    DisplayLockGuard lock(this);
+    if (!lock) {
+        return;
+    }
+    RefreshSubtitlePagesLocked();
+}
+
+void PassportDisplay::RefreshSubtitlePagesLocked() {
+    if (chat_message_label_ == nullptr || bottom_bar_ == nullptr) {
+        return;
+    }
+    lv_obj_update_layout(bottom_bar_);
+    subtitle_content_height_ = lv_obj_get_height(chat_message_label_);
+    subtitle_viewport_height_ = lv_obj_get_height(bottom_bar_);
+    subtitle_page_count_ =
+        passport_subtitle_page_count(subtitle_content_height_, subtitle_viewport_height_);
+    subtitle_page_ = 0;
+    lv_obj_scroll_to_y(bottom_bar_, 0, LV_ANIM_OFF);
+
+    const bool hidden = lv_obj_has_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
+    const bool turn = subtitle_page_count_ > 1 && !hidden && page_ == Page::kClosed;
+    if (subtitle_timer_ == nullptr) {
+        return;
+    }
+    if (turn) {
+        lv_timer_resume(subtitle_timer_);
+        lv_timer_reset(subtitle_timer_);
+    } else {
+        lv_timer_pause(subtitle_timer_);
+    }
+}
+
+void PassportDisplay::SubtitleTimerCb(lv_timer_t* timer) {
+    // Runs on the LVGL task, which already holds the display lock.
+    auto* self = static_cast<PassportDisplay*>(lv_timer_get_user_data(timer));
+    if (self != nullptr) {
+        self->AdvanceSubtitlePageLocked();
+    }
+}
+
+void PassportDisplay::AdvanceSubtitlePageLocked() {
+    if (subtitle_page_count_ <= 1 || bottom_bar_ == nullptr) {
+        return;
+    }
+    if (page_ != Page::kClosed || lv_obj_has_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN)) {
+        if (subtitle_timer_ != nullptr) {
+            lv_timer_pause(subtitle_timer_);
+        }
+        return;
+    }
+    subtitle_page_ = (subtitle_page_ + 1) % subtitle_page_count_;
+    const int32_t offset = passport_subtitle_page_offset(subtitle_page_, subtitle_content_height_,
+                                                         subtitle_viewport_height_);
+    lv_obj_scroll_to_y(bottom_bar_, offset, LV_ANIM_OFF);
 }
 
 void PassportDisplay::UpdateStatusBar(bool update_all) {
@@ -113,6 +300,7 @@ void PassportDisplay::UpdateStatusBar(bool update_all) {
         return;
     }
     HideMenuLocked();
+    RefreshSubtitlePagesLocked();
     ESP_LOGI(TAG, "Settings list closed for low battery");
 }
 
@@ -282,12 +470,17 @@ void PassportDisplay::RenderMenu() {
     // so drop the list instead and leave the popup on top.
     if (LowBatteryPopupVisible()) {
         HideMenuLocked();
+        RefreshSubtitlePagesLocked();
         ESP_LOGI(TAG, "Settings list closed for low battery");
         return;
     }
     lv_label_set_text(menu_label_, text.c_str());
     lv_obj_remove_flag(menu_panel_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(menu_panel_);
+    // The list covers the subtitle. Leave the page timer paused until it closes.
+    if (subtitle_timer_ != nullptr) {
+        lv_timer_pause(subtitle_timer_);
+    }
 }
 
 void PassportDisplay::OpenMenu() {
@@ -333,6 +526,7 @@ void PassportDisplay::CloseMenu() {
     }
     HideMenuLocked();
     ESP_LOGI(TAG, "Settings list closed");
+    RefreshSubtitlePagesLocked();
 }
 
 void PassportDisplay::HandleMenuAction(MenuAction action) {

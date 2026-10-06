@@ -56,6 +56,14 @@ static void dump_mask(void) {
     }
 }
 
+static void dump_rect(const passport_rect_t* rect) {
+    if (rect == NULL) {
+        printf("none\n");
+        return;
+    }
+    printf("%d %d %d %d\n", (int)rect->x, (int)rect->y, (int)rect->width, (int)rect->height);
+}
+
 int main(int argc, char** argv) {
     if (argc == 5 && strcmp(argv[1], "span") == 0) {
         dump_span((int32_t)atoi(argv[2]), (int32_t)atoi(argv[3]), (int32_t)atoi(argv[4]));
@@ -65,7 +73,45 @@ int main(int argc, char** argv) {
         dump_mask();
         return 0;
     }
-    fprintf(stderr, "usage: span W H R | mask\n");
+    if (argc == 5 && strcmp(argv[1], "safe") == 0) {
+        passport_rect_t rect;
+        if (!passport_glass_safe_rect((int32_t)atoi(argv[2]), (int32_t)atoi(argv[3]),
+                                      (int32_t)atoi(argv[4]), &rect)) {
+            printf("none\n");
+            return 0;
+        }
+        dump_rect(&rect);
+        return 0;
+    }
+    if (argc == 7 && strcmp(argv[1], "subtitle") == 0) {
+        passport_rect_t rect;
+        if (!passport_subtitle_viewport((int32_t)atoi(argv[2]), (int32_t)atoi(argv[3]),
+                                        (int32_t)atoi(argv[4]), (int32_t)atoi(argv[5]),
+                                        (int32_t)atoi(argv[6]), &rect)) {
+            printf("none\n");
+            return 0;
+        }
+        dump_rect(&rect);
+        return 0;
+    }
+    if (argc == 9 && strcmp(argv[1], "inside") == 0) {
+        passport_rect_t rect = {(int32_t)atoi(argv[5]), (int32_t)atoi(argv[6]),
+                                (int32_t)atoi(argv[7]), (int32_t)atoi(argv[8])};
+        bool ok = passport_rect_inside_glass(&rect, (int32_t)atoi(argv[2]), (int32_t)atoi(argv[3]),
+                                             (int32_t)atoi(argv[4]));
+        printf("%d\n", ok ? 1 : 0);
+        return 0;
+    }
+    if (argc == 5 && strcmp(argv[1], "pages") == 0) {
+        int32_t content = (int32_t)atoi(argv[2]);
+        int32_t viewport = (int32_t)atoi(argv[3]);
+        int32_t page = (int32_t)atoi(argv[4]);
+        printf("%d %d\n", (int)passport_subtitle_page_count(content, viewport),
+               (int)passport_subtitle_page_offset(page, content, viewport));
+        return 0;
+    }
+    fprintf(stderr, "usage: span W H R | mask | safe W H R | subtitle W H R LINE HALF | "
+                    "inside W H R X Y W H | pages CONTENT VIEW PAGE\n");
     return 2;
 }
 """
@@ -169,6 +215,75 @@ class PassportScreenRoundingTests(unittest.TestCase):
         self.assertEqual(pixels[:30], [0] * 30)
         self.assertEqual(pixels[30:], [0xBEEF] * 10)
         self.assertEqual([int(word, 16) for word in middle.split()], [0x1111] * 8)
+
+    def _rect(self, *args):
+        line = subprocess.check_output([str(self.binary), *args], text=True).strip()
+        if line == "none":
+            return None
+        x, y, w, h = (int(part) for part in line.split())
+        return (x, y, w, h)
+
+    def test_safe_rect_is_the_full_width_band(self):
+        # 240x320, radius 30: rows 30..289 are the straight section.
+        self.assertEqual(self._rect("safe", "240", "320", "30"), (0, 30, 240, 260))
+        self.assertEqual(self._rect("safe", "240", "320", "0"), (0, 0, 240, 320))
+        # A radius that consumes the short side leaves no full-width row.
+        self.assertIsNone(self._rect("safe", "10", "10", "30"))
+
+    def test_subtitle_stays_inside_the_glass_and_below_the_emoji(self):
+        # 32 px emoji (half 16) centered at y=160, line height 26.
+        # Slice under the emoji is y=176..290 (114 px) -> 4 lines, bottom aligned.
+        rect = self._rect("subtitle", "240", "320", "30", "26", "16")
+        self.assertEqual(rect, (0, 186, 240, 104))
+        rows = self.spans(240, 320, 30)
+        x, y, w, h = rect
+        for row in range(y, y + h):
+            ok, x1, x2 = rows[row]
+            self.assertEqual(ok, 1, row)
+            self.assertLessEqual(x1, x, row)
+            self.assertGreaterEqual(x2, x + w - 1, row)
+        self.assertEqual(
+            subprocess.check_output(
+                [str(self.binary), "inside", "240", "320", "30", "0", "186", "240", "104"],
+                text=True,
+            ).strip(),
+            "1",
+        )
+        # The top row of the glass is not a safe place for a full-width label.
+        self.assertEqual(
+            subprocess.check_output(
+                [str(self.binary), "inside", "240", "320", "30", "0", "0", "240", "20"],
+                text=True,
+            ).strip(),
+            "0",
+        )
+        # A line taller than the safe rect does not invent a viewport.
+        self.assertIsNone(self._rect("subtitle", "240", "320", "30", "300", "16"))
+        # Zero radius uses the whole panel, still in whole lines under the emoji.
+        # 320 - 176 = 144 px, 5 lines of 26, bottom aligned at y=190.
+        square = self._rect("subtitle", "240", "320", "0", "26", "16")
+        self.assertEqual(square, (0, 190, 240, 130))
+
+    def test_subtitle_pages_clamp_the_last_page(self):
+        def pages(content, viewport, page):
+            count, offset = (
+                int(part)
+                for part in subprocess.check_output(
+                    [str(self.binary), "pages", str(content), str(viewport), str(page)],
+                    text=True,
+                ).split()
+            )
+            return count, offset
+
+        self.assertEqual(pages(104, 104, 0), (1, 0))
+        self.assertEqual(pages(0, 104, 0), (1, 0))
+        self.assertEqual(pages(105, 104, 0), (2, 0))
+        # Last page shows the tail (offset 1) instead of a blank 104 px jump.
+        self.assertEqual(pages(105, 104, 1), (2, 1))
+        self.assertEqual(pages(300, 104, 2), (3, 196))
+        self.assertEqual(pages(300, 104, 99), (3, 196))
+        self.assertEqual(pages(300, 104, -1), (3, 0))
+        self.assertEqual(pages(300, 0, 0), (1, 0))
 
 
 if __name__ == "__main__":

@@ -117,6 +117,37 @@ dim, soft-sleep, or deep-sleep panel sequence. Confirm on hardware that the
 black pixels sit under the bezel rather than eating the status icons; adjust
 `PASSPORT_SCREEN_RADIUS` if the glass is different.
 
+### Subtitles
+
+Chat and TTS text use the default message style (not the WeChat bubble list,
+which keeps a widget per message). The label wraps, and it lives in a fixed
+viewport derived from the mask:
+
+- The safe rect is the longest run of rows whose visible span is the full
+  240 px width. For this 240×320 panel and a 30 px radius that is
+  `(x=0, y=30, w=240, h=260)`.
+- The subtitle viewport is the whole-line block under the centered 32 px
+  emotion image, bottom-aligned in that safe rect, then narrowed to the
+  rows' common visible span. The host test uses a 26 px line, which lands at
+  `(x=0, y=186, w=240, h=104)` (4 lines). The firmware measures the live text
+  font and logs the rect it applied (`Safe area ... subtitle ...`). A
+  different font moves it; the numbers come from `passport_subtitle_viewport`,
+  not from a second set of constants.
+- The status row and the low-battery popup sit in the same safe rect. The
+  status line is clipped instead of circular-scrolled, so it does not redraw
+  every frame.
+
+Long text is paged, not animated. A vertical LVGL scroll would invalidate the
+viewport on every frame and keep the SPI bus and the CPU busy on a C3 with no
+PSRAM. `passport_subtitle_page_count` / `passport_subtitle_page_offset` split
+the wrapped label into viewport-sized pages and a 2.5 s timer
+(`kPassportSubtitlePageMs`) steps between them with `LV_ANIM_OFF`. The last
+page is clamped so the tail stays on screen. Each TTS `sentence_start`
+replaces the label and restarts at page 0, so a streaming sentence is shown
+from its first line. One page pauses the timer. The settings list pauses it
+too and resumes when the list closes. Short text still fits on one page and
+does not scroll.
+
 ## Controls
 
 The three physical keys map to XiaoZhi's voice-assistant actions:

@@ -44,6 +44,155 @@ bool passport_rounded_row_span(int32_t y, int32_t width, int32_t height, int32_t
     return *x1 <= *x2;
 }
 
+bool passport_glass_safe_rect(int32_t width, int32_t height, int32_t radius, passport_rect_t* out) {
+    if (out == NULL || width <= 0 || height <= 0) {
+        return false;
+    }
+
+    int32_t best_y = 0;
+    int32_t best_h = 0;
+    int32_t run_y = -1;
+    for (int32_t y = 0; y < height; ++y) {
+        int32_t x1 = 0;
+        int32_t x2 = 0;
+        const bool full = passport_rounded_row_span(y, width, height, radius, &x1, &x2) &&
+                          x1 == 0 && x2 == width - 1;
+        if (full) {
+            if (run_y < 0) {
+                run_y = y;
+            }
+            continue;
+        }
+        if (run_y >= 0) {
+            const int32_t run_h = y - run_y;
+            if (run_h > best_h) {
+                best_h = run_h;
+                best_y = run_y;
+            }
+            run_y = -1;
+        }
+    }
+    if (run_y >= 0) {
+        const int32_t run_h = height - run_y;
+        if (run_h > best_h) {
+            best_h = run_h;
+            best_y = run_y;
+        }
+    }
+    if (best_h <= 0) {
+        return false;
+    }
+    out->x = 0;
+    out->y = best_y;
+    out->width = width;
+    out->height = best_h;
+    return true;
+}
+
+// Inclusive x span visible on every row of [y, y + height).
+static bool band_visible_span(int32_t y, int32_t band_height, int32_t width, int32_t height,
+                              int32_t radius, int32_t* x1, int32_t* x2) {
+    if (band_height <= 0 || x1 == NULL || x2 == NULL) {
+        return false;
+    }
+    int32_t left = 0;
+    int32_t right = width - 1;
+    for (int32_t row = y; row < y + band_height; ++row) {
+        int32_t row_x1 = 0;
+        int32_t row_x2 = 0;
+        if (!passport_rounded_row_span(row, width, height, radius, &row_x1, &row_x2)) {
+            return false;
+        }
+        if (row_x1 > left) {
+            left = row_x1;
+        }
+        if (row_x2 < right) {
+            right = row_x2;
+        }
+    }
+    if (left > right) {
+        return false;
+    }
+    *x1 = left;
+    *x2 = right;
+    return true;
+}
+
+bool passport_subtitle_viewport(int32_t screen_width, int32_t screen_height, int32_t radius,
+                                int32_t line_height, int32_t emoji_half, passport_rect_t* out) {
+    passport_rect_t safe;
+    if (out == NULL || line_height <= 0 ||
+        !passport_glass_safe_rect(screen_width, screen_height, radius, &safe)) {
+        return false;
+    }
+    if (emoji_half < 0) {
+        emoji_half = 0;
+    }
+
+    // The emotion image is centered on the full panel, not on the safe rect.
+    const int32_t below_emoji = screen_height / 2 + emoji_half;
+    int32_t top = below_emoji > safe.y ? below_emoji : safe.y;
+    const int32_t bottom = safe.y + safe.height;
+    if (top > bottom) {
+        top = bottom;
+    }
+    int32_t lines = (bottom - top) / line_height;
+    if (lines < 1) {
+        // One line does not fit under the emoji. Park a single line on the
+        // bottom of the safe rect so the glyphs still clear the corner mask.
+        if (safe.height < line_height) {
+            return false;
+        }
+        lines = 1;
+    }
+    const int32_t text_height = lines * line_height;
+    const int32_t text_y = bottom - text_height;
+
+    int32_t x1 = 0;
+    int32_t x2 = 0;
+    if (!band_visible_span(text_y, text_height, screen_width, screen_height, radius, &x1, &x2)) {
+        return false;
+    }
+    out->x = x1;
+    out->y = text_y;
+    out->width = x2 - x1 + 1;
+    out->height = text_height;
+    return true;
+}
+
+bool passport_rect_inside_glass(const passport_rect_t* rect, int32_t screen_width,
+                                int32_t screen_height, int32_t radius) {
+    if (rect == NULL || rect->width <= 0 || rect->height <= 0) {
+        return false;
+    }
+    int32_t x1 = 0;
+    int32_t x2 = 0;
+    if (!band_visible_span(rect->y, rect->height, screen_width, screen_height, radius, &x1, &x2)) {
+        return false;
+    }
+    return rect->x >= x1 && rect->x + rect->width - 1 <= x2;
+}
+
+int32_t passport_subtitle_page_count(int32_t content_height, int32_t viewport_height) {
+    if (viewport_height <= 0 || content_height <= viewport_height) {
+        return 1;
+    }
+    return (content_height + viewport_height - 1) / viewport_height;
+}
+
+int32_t passport_subtitle_page_offset(int32_t page, int32_t content_height,
+                                      int32_t viewport_height) {
+    if (page < 0 || viewport_height <= 0 || content_height <= viewport_height) {
+        return 0;
+    }
+    const int32_t max_offset = content_height - viewport_height;
+    const int64_t offset = (int64_t)page * (int64_t)viewport_height;
+    if (offset > max_offset) {
+        return max_offset;
+    }
+    return (int32_t)offset;
+}
+
 void passport_mask_rgb565_area(uint8_t* buf, uint32_t stride, int32_t x1, int32_t y1, int32_t x2,
                                int32_t y2, int32_t screen_width, int32_t screen_height,
                                int32_t radius) {
