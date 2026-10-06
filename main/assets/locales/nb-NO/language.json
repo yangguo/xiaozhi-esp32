@@ -24,6 +24,7 @@
         "CONNECTED_TO": "Koblet til ",
         "LISTENING": "Lytter...",
         "SPEAKING": "Snakker...",
+        "THINKING": "Tenker...",
         "SERVER_NOT_FOUND": "Søker etter tilgjengelig tjeneste",
         "SERVER_NOT_CONNECTED": "Kan ikke koble til tjeneste, vennligst prøv igjen senere",
         "SERVER_TIMEOUT": "Tidsavbrudd for å vente på svar",

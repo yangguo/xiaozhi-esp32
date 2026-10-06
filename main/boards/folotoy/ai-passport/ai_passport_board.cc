@@ -1,28 +1,32 @@
-#include "wifi_board.h"
-#include "passport_display.h"
-#include "codecs/es8311_audio_codec.h"
 #include "application.h"
-#include "button.h"
-#include "config.h"
 #include "assets/lang_config.h"
+#include "button.h"
+#include "codecs/es8311_audio_codec.h"
+#include "config.h"
 #include "cw2017_battery_monitor.h"
+#include "passport_activity.h"
+#include "passport_display.h"
+#include "passport_ptt.h"
 #include "power_save_timer.h"
+#include "wifi_board.h"
 
-#include <esp_log.h>
-#include <esp_lcd_panel_vendor.h>
+#include <driver/i2c_master.h>
+#include <driver/ledc.h>
+#include <driver/spi_common.h>
+#include <esp_adc/adc_oneshot.h>
 #include <esp_lcd_panel_ops.h>
+#include <esp_lcd_panel_vendor.h>
+#include <esp_log.h>
 #include <esp_pm.h>
 #include <esp_sleep.h>
 #include <esp_system.h>
 #include <esp_timer.h>
 #include <button_adc.h>
-#include <wifi_manager.h>
-#include <esp_adc/adc_oneshot.h>
-#include <driver/i2c_master.h>
-#include <driver/ledc.h>
-#include <driver/spi_common.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <wifi_manager.h>
+
+#include <atomic>
 
 #define TAG "AiPassport"
 
@@ -115,15 +119,13 @@ struct Es8311RegValue {
 // back as 0x7F - the check below expects that, and the power-down bits 0-6 the
 // sequence is after do stick.
 static constexpr Es8311RegValue kEs8311SuspendSequence[] = {
-    {0x32, 0x00}, {0x17, 0x00}, {0x0E, 0xFF}, {0x12, 0x02},
-    {0x14, 0x00}, {0x0D, 0xFA}, {0x15, 0x00}, {0x02, 0x10},
-    {0x00, 0x00}, {0x00, 0x1F}, {0x01, 0x30}, {0x01, 0x00},
-    {0x45, 0x01}, {0x0D, 0xFC}, {0x02, 0x00},
+    {0x32, 0x00}, {0x17, 0x00}, {0x0E, 0xFF}, {0x12, 0x02}, {0x14, 0x00},
+    {0x0D, 0xFA}, {0x15, 0x00}, {0x02, 0x10}, {0x00, 0x00}, {0x00, 0x1F},
+    {0x01, 0x30}, {0x01, 0x00}, {0x45, 0x01}, {0x0D, 0xFC}, {0x02, 0x00},
 };
 
 static constexpr Es8311RegValue kEs8311SuspendVerify[] = {
-    {0x00, 0x1F}, {0x01, 0x00}, {0x0D, 0xFC},
-    {0x0E, 0x7F}, {0x12, 0x02}, {0x45, 0x01},
+    {0x00, 0x1F}, {0x01, 0x00}, {0x0D, 0xFC}, {0x0E, 0x7F}, {0x12, 0x02}, {0x45, 0x01},
 };
 
 static constexpr int kEs8311SuspendAttempts = 2;
@@ -147,11 +149,10 @@ static constexpr uint8_t kEs8311I2cAddress = AUDIO_CODEC_ES8311_ADDR >> 1;
 class AiPassportAudioCodec : public Es8311AudioCodec {
 public:
     AiPassportAudioCodec(void* i2c_master_handle, i2c_port_t i2c_port, int input_sample_rate,
-                         int output_sample_rate, gpio_num_t mclk, gpio_num_t bclk,
-                         gpio_num_t ws, gpio_num_t dout, gpio_num_t din, gpio_num_t pa_pin,
-                         uint8_t es8311_addr)
-        : Es8311AudioCodec(i2c_master_handle, i2c_port, input_sample_rate, output_sample_rate,
-                           mclk, bclk, ws, dout, din, pa_pin, es8311_addr) {}
+                         int output_sample_rate, gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws,
+                         gpio_num_t dout, gpio_num_t din, gpio_num_t pa_pin, uint8_t es8311_addr)
+        : Es8311AudioCodec(i2c_master_handle, i2c_port, input_sample_rate, output_sample_rate, mclk,
+                           bclk, ws, dout, din, pa_pin, es8311_addr) {}
 
     void StopI2s() {
         // TX before RX, matching the FoloToy BSP's audio_disable_i2s_channels().
@@ -195,22 +196,21 @@ public:
     // guard released here has already filtered those out.
     void OnPressEnd(std::function<void()> callback) {
         on_press_end_ = callback;
-        iot_button_register_cb(button_handle_, BUTTON_PRESS_END, nullptr,
-                               [](void* handle, void* usr_data) {
-                                   auto* button = static_cast<PassportAdcButton*>(usr_data);
-                                   if (button->on_press_end_) {
-                                       button->on_press_end_();
-                                   }
-                               },
-                               this);
+        iot_button_register_cb(
+            button_handle_, BUTTON_PRESS_END, nullptr,
+            [](void* handle, void* usr_data) {
+                auto* button = static_cast<PassportAdcButton*>(usr_data);
+                if (button->on_press_end_) {
+                    button->on_press_end_();
+                }
+            },
+            this);
     }
 
     // Samples the ladder on demand. Used once at boot: the key that woke the
     // device out of deep sleep is still held while the component starts, so this
     // separates that press from a wake whose key was already released.
-    bool IsKeyDown() const {
-        return iot_button_get_key_level(button_handle_) == BUTTON_ACTIVE;
-    }
+    bool IsKeyDown() const { return iot_button_get_key_level(button_handle_) == BUTTON_ACTIVE; }
 
 private:
     std::function<void()> on_press_end_;
@@ -218,22 +218,39 @@ private:
 
 class AiPassportBoard : public WifiBoard {
 private:
-    // Closes the settings list whenever the device leaves idle. There is no
-    // status LED; GetLed() exists so Application's existing OnStateChanged
-    // call can reach this board. That call also runs inside StartNotification
-    // before the popup sound, because the state event itself is handled on
-    // the next main-loop turn. An empty chat line still takes this path.
+    // There is no status LED. GetLed() exists so Application's existing
+    // OnStateChanged call can reach this board. That call also runs inside
+    // StartNotification before the popup sound, because the state event itself
+    // is handled on the next main-loop turn. An empty chat line still takes
+    // this path. The same hook closes the settings list when the device leaves
+    // idle, updates the listening / thinking / speaking line, and wakes a
+    // dimmed backlight for those phases.
     class MenuCloseLed : public Led {
     public:
         explicit MenuCloseLed(AiPassportBoard* board) : board_(board) {}
 
         void OnStateChanged() override {
             auto* display = board_->display_;
-            if (display == nullptr || !display->IsMenuOpen()) {
-                return;
-            }
-            if (Application::GetInstance().GetDeviceState() != kDeviceStateIdle) {
+            auto& app = Application::GetInstance();
+            const DeviceState state = app.GetDeviceState();
+            if (display != nullptr && display->IsMenuOpen() && state != kDeviceStateIdle) {
                 display->CloseMenu();
+            }
+            // Released during connect: StopListening is a no-op until the
+            // device is actually listening, so finish the release here.
+            if (state == kDeviceStateListening && board_->ptt_session_ &&
+                !board_->ptt_held_.load()) {
+                app.StopListening();
+            }
+            if (state == kDeviceStateIdle) {
+                board_->ptt_session_ = false;
+            }
+            PassportActivity activity = PassportActivity::kNone;
+            if (display != nullptr) {
+                activity = display->NoteDeviceState(state);
+            }
+            if (PassportActivityWakesScreen(activity, state)) {
+                board_->WakeUpPowerSaveTimer();
             }
         }
 
@@ -272,6 +289,13 @@ private:
     // the device would flicker into soft sleep - or fall asleep - on a key press
     // that lands in that window.
     int64_t last_key_us_ = 0;
+    // Push-to-talk. The held/started/suppress flags cross the button task and
+    // the main task. ptt_session_ is only touched on the main task.
+    esp_timer_handle_t ptt_arm_timer_ = nullptr;
+    std::atomic<bool> ptt_held_{false};
+    std::atomic<bool> ptt_started_{false};
+    bool ptt_session_ = false;
+    std::atomic<bool> suppress_ok_click_{false};
 
     // Guards the stage transitions against a key press that arrived while they
     // were queued: PowerSaveTimer has already forgiven that press, but the wake
@@ -328,9 +352,10 @@ private:
             .glitch_ignore_cnt = 7,
             .intr_priority = 0,
             .trans_queue_depth = 0,
-            .flags = {
-                .enable_internal_pullup = 1,
-            },
+            .flags =
+                {
+                    .enable_internal_pullup = 1,
+                },
         };
         ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &codec_i2c_bus_));
 
@@ -339,9 +364,10 @@ private:
             .device_address = kEs8311I2cAddress,
             .scl_speed_hz = 100 * 1000,
             .scl_wait_us = 0,
-            .flags = {
-                .disable_ack_check = 0,
-            },
+            .flags =
+                {
+                    .disable_ack_check = 0,
+                },
         };
         ESP_ERROR_CHECK(i2c_master_bus_add_device(codec_i2c_bus_, &es8311_cfg, &es8311_handle_));
 
@@ -382,6 +408,60 @@ private:
                state != kDeviceStateAudioTesting;
     }
 
+    PassportPttPhase PttPhase() const {
+        if (ptt_started_.load()) {
+            return PassportPttPhase::kActive;
+        }
+        if (ptt_held_.load()) {
+            return PassportPttPhase::kHolding;
+        }
+        return PassportPttPhase::kIdle;
+    }
+
+    bool PttMenuOpen() const { return display_ != nullptr && display_->IsMenuOpen(); }
+
+    void StopPttArmTimer() {
+        if (ptt_arm_timer_ != nullptr) {
+            esp_timer_stop(ptt_arm_timer_);
+        }
+    }
+
+    // esp_timer task. StartListening only sets an event bit, but the menu and
+    // network checks touch the display, so the decision runs on the main task.
+    // suppress_ok_click_ is set only after that decision commits a start.
+    void OnPttArmFired() {
+        if (!ptt_held_.load()) {
+            return;
+        }
+        Application::GetInstance().Schedule([this]() {
+            if (ptt_started_.load()) {
+                return;
+            }
+            auto& app = Application::GetInstance();
+            const bool network_up =
+                !ToggleChatNeedsNetwork() || WifiManager::GetInstance().IsConnected();
+            const PassportPttDecision decision =
+                PassportPttOnArm(PttPhase(), app.GetDeviceState(), PttMenuOpen(),
+                                 KeyEventsBlocked(), network_up, ptt_held_.load());
+            // A bail leaves suppress_ok_click_ clear, so the release is still
+            // the normal tap (toggle chat, or the connecting hint).
+            if (!decision.start_listening) {
+                return;
+            }
+            ptt_started_.store(true);
+            ptt_session_ = true;
+            suppress_ok_click_.store(true);
+            const bool still_held = ptt_held_.load();
+            ESP_LOGI(TAG, "Push-to-talk start");
+            app.StartListening();
+            if (!still_held) {
+                ptt_started_.store(false);
+                ESP_LOGI(TAG, "Push-to-talk released during start");
+                app.StopListening();
+            }
+        });
+    }
+
     void InitializeButtons() {
         for (int i = 0; i < kAdcButtonNum; i++) {
             adc_button_[i] = nullptr;
@@ -411,17 +491,17 @@ private:
         adc_cfg.unit_id = ADC_UNIT_1;
         adc_cfg.adc_channel = ADC_CHANNEL_0;  // GPIO0
 
-        adc_cfg.button_index = kAdcButtonUp;      // UP:   ~0 mV
+        adc_cfg.button_index = kAdcButtonUp;  // UP:   ~0 mV
         adc_cfg.min = BSP_ADC_BUTTON_UP_MIN;
         adc_cfg.max = BSP_ADC_BUTTON_UP_MAX;
         adc_button_[kAdcButtonUp] = new PassportAdcButton(adc_cfg);
 
-        adc_cfg.button_index = kAdcButtonDown;    // DOWN: ~300 mV
+        adc_cfg.button_index = kAdcButtonDown;  // DOWN: ~300 mV
         adc_cfg.min = BSP_ADC_BUTTON_DOWN_MIN;
         adc_cfg.max = BSP_ADC_BUTTON_DOWN_MAX;
         adc_button_[kAdcButtonDown] = new PassportAdcButton(adc_cfg);
 
-        adc_cfg.button_index = kAdcButtonOk;      // OK:   ~595 mV
+        adc_cfg.button_index = kAdcButtonOk;  // OK:   ~595 mV
         adc_cfg.min = BSP_ADC_BUTTON_OK_MIN;
         adc_cfg.max = BSP_ADC_BUTTON_OK_MAX;
         adc_button_[kAdcButtonOk] = new PassportAdcButton(adc_cfg);
@@ -454,16 +534,20 @@ private:
         // work onto the main task so LVGL and codec access stay on one thread.
         auto up = adc_button_[kAdcButtonUp];
         up->OnClick([this]() {
-            if (KeyEventsBlocked()) return;
+            if (KeyEventsBlocked())
+                return;
             Application::GetInstance().Schedule([this]() {
-                if (ConsumeMenuKey(PassportDisplay::MenuAction::kUp)) return;
+                if (ConsumeMenuKey(PassportDisplay::MenuAction::kUp))
+                    return;
                 ChangeVolume(10);
             });
         });
         up->OnLongPress([this]() {
-            if (KeyEventsBlocked()) return;
+            if (KeyEventsBlocked())
+                return;
             Application::GetInstance().Schedule([this]() {
-                if (ConsumeMenuKey(PassportDisplay::MenuAction::kIgnore)) return;
+                if (ConsumeMenuKey(PassportDisplay::MenuAction::kIgnore))
+                    return;
                 GetAudioCodec()->SetOutputVolume(100);
                 GetDisplay()->ShowNotification(Lang::Strings::MAX_VOLUME);
             });
@@ -471,26 +555,44 @@ private:
 
         auto down = adc_button_[kAdcButtonDown];
         down->OnClick([this]() {
-            if (KeyEventsBlocked()) return;
+            if (KeyEventsBlocked())
+                return;
             Application::GetInstance().Schedule([this]() {
-                if (ConsumeMenuKey(PassportDisplay::MenuAction::kDown)) return;
+                if (ConsumeMenuKey(PassportDisplay::MenuAction::kDown))
+                    return;
                 ChangeVolume(-10);
             });
         });
         down->OnLongPress([this]() {
-            if (KeyEventsBlocked()) return;
+            if (KeyEventsBlocked())
+                return;
             Application::GetInstance().Schedule([this]() {
-                if (ConsumeMenuKey(PassportDisplay::MenuAction::kIgnore)) return;
+                if (ConsumeMenuKey(PassportDisplay::MenuAction::kIgnore))
+                    return;
                 GetAudioCodec()->SetOutputVolume(0);
                 GetDisplay()->ShowNotification(Lang::Strings::MUTED);
             });
         });
 
+        esp_timer_create_args_t ptt_timer_args = {
+            .callback = [](void* arg) { static_cast<AiPassportBoard*>(arg)->OnPttArmFired(); },
+            .arg = this,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "passport_ptt",
+            .skip_unhandled_events = true,
+        };
+        ESP_ERROR_CHECK(esp_timer_create(&ptt_timer_args, &ptt_arm_timer_));
+
         auto ok = adc_button_[kAdcButtonOk];
         ok->OnClick([this]() {
-            if (KeyEventsBlocked()) return;
+            if (KeyEventsBlocked())
+                return;
+            if (PassportPttOnClick(suppress_ok_click_.exchange(false)).click_consumed) {
+                return;
+            }
             Application::GetInstance().Schedule([this]() {
-                if (ConsumeMenuKey(PassportDisplay::MenuAction::kConfirm)) return;
+                if (ConsumeMenuKey(PassportDisplay::MenuAction::kConfirm))
+                    return;
                 // Opening the audio channel with the network down would only
                 // raise an error alert, so show the ordinary "connecting" hint
                 // instead. Covers a wake from soft sleep as well as a link that
@@ -503,13 +605,18 @@ private:
                 ToggleChat();
             });
         });
-        // Held for the button component's 2 s threshold. Opens the settings
-        // list only from idle; the same hold closes it. The wake-key guard
-        // above drops the hold that brings the device out of soft sleep.
-        ok->OnLongPress([this]() {
-            if (KeyEventsBlocked()) return;
+        // Double-click opens the settings list. A hold past kPassportPttArmMs
+        // is push-to-talk, so it no longer opens the list. The same
+        // double-click closes the list. The wake-key guard drops the press
+        // that brings the device out of soft sleep.
+        ok->OnDoubleClick([this]() {
+            if (KeyEventsBlocked())
+                return;
             Application::GetInstance().Schedule([this]() {
-                if (ConsumeMenuKey(PassportDisplay::MenuAction::kClose)) return;
+                if (PassportPttIgnoresLongPress(PttPhase()))
+                    return;
+                if (ConsumeMenuKey(PassportDisplay::MenuAction::kClose))
+                    return;
                 auto& app = Application::GetInstance();
                 if (display_ == nullptr || app.GetDeviceState() != kDeviceStateIdle ||
                     !app.CanEnterSleepMode()) {
@@ -518,11 +625,30 @@ private:
                 display_->OpenMenu();
             });
         });
+        // Still closes the list. Does not open it, and does not cancel a
+        // push-to-talk hold that has already passed kPassportPttArmMs.
+        ok->OnLongPress([this]() {
+            // BUTTON_LONG_PRESS_START replaces SINGLE_CLICK for this gesture.
+            // Drop the suppress bit here or the next short tap would be eaten.
+            suppress_ok_click_.store(false);
+            if (KeyEventsBlocked())
+                return;
+            Application::GetInstance().Schedule([this]() {
+                if (PassportPttIgnoresLongPress(PttPhase()))
+                    return;
+                if (ConsumeMenuKey(PassportDisplay::MenuAction::kClose))
+                    return;
+            });
+        });
 
         // Cancel the idle countdown on press-down rather than on click, so a key
         // held for a long press also wakes the screen and the CPU immediately.
         // Press-down itself is never blocked: it is what wakes the device.
+        // OK is registered below so its press-down can also arm push-to-talk.
         for (auto* button : adc_button_) {
+            if (button == ok) {
+                continue;
+            }
             button->OnPressDown([this]() {
                 last_key_us_ = esp_timer_get_time();
                 // The press that brings the device out of soft sleep is dropped as
@@ -537,6 +663,34 @@ private:
             // only end with the sequence.
             button->OnPressEnd([this]() { EndWakeKeyGuard(); });
         }
+        ok->OnPressDown([this]() {
+            last_key_us_ = esp_timer_get_time();
+            if (soft_sleep_active_) {
+                ArmWakeKeyGuard();
+            }
+            WakeUpPowerSaveTimer();
+            StopPttArmTimer();
+            auto& app = Application::GetInstance();
+            const PassportPttDecision decision =
+                PassportPttPressDown(app.GetDeviceState(), PttMenuOpen(), KeyEventsBlocked());
+            ptt_held_.store(decision.phase == PassportPttPhase::kHolding);
+            if (decision.phase != PassportPttPhase::kHolding || ptt_arm_timer_ == nullptr) {
+                return;
+            }
+            esp_timer_start_once(ptt_arm_timer_, (int64_t)kPassportPttArmMs * 1000);
+        });
+        ok->OnPressUp([this]() {
+            const PassportPttDecision decision = PassportPttOnRelease(PttPhase());
+            ptt_held_.store(false);
+            ptt_started_.store(false);
+            StopPttArmTimer();
+            if (!decision.stop_listening) {
+                return;
+            }
+            ESP_LOGI(TAG, "Push-to-talk stop");
+            Application::GetInstance().StopListening();
+        });
+        ok->OnPressEnd([this]() { EndWakeKeyGuard(); });
     }
 
     void InitializeSpi() {
@@ -592,10 +746,14 @@ private:
             {0xD0, {0xA7, 0xA1}, 2, 0},
             {0xD0, {0xA4, 0xA1}, 2, 0},
             {0xD6, {0xA1}, 1, 0},
-            {0xE0, {0xD0, 0x04, 0x08, 0x0A, 0x09, 0x05, 0x2D, 0x43,
-                    0x49, 0x09, 0x16, 0x15, 0x26, 0x2B}, 14, 0},
-            {0xE1, {0xD0, 0x03, 0x09, 0x0A, 0x0A, 0x06, 0x2E, 0x44,
-                    0x40, 0x3A, 0x15, 0x15, 0x26, 0x2A}, 14, 10},
+            {0xE0,
+             {0xD0, 0x04, 0x08, 0x0A, 0x09, 0x05, 0x2D, 0x43, 0x49, 0x09, 0x16, 0x15, 0x26, 0x2B},
+             14,
+             0},
+            {0xE1,
+             {0xD0, 0x03, 0x09, 0x0A, 0x0A, 0x06, 0x2E, 0x44, 0x40, 0x3A, 0x15, 0x15, 0x26, 0x2A},
+             14,
+             10},
         };
         for (const auto& cmd : kSt7789P3InitCommands) {
             esp_lcd_panel_io_tx_param(panel_io, cmd.command, cmd.data, cmd.data_length);
@@ -611,10 +769,9 @@ private:
         esp_lcd_panel_disp_on_off(panel, true);
 
         panel_ = panel;
-        display_ = new PassportDisplay(panel_io, panel,
-                                       DISPLAY_WIDTH, DISPLAY_HEIGHT,
-                                       DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
-                                       DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        display_ = new PassportDisplay(panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT,
+                                       DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X,
+                                       DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
     }
 
     void WakeUpPowerSaveTimer() {
@@ -630,8 +787,7 @@ private:
     // shared key node would stay pinned after a wake. Levels are rewritten
     // while the holds are still active so releasing them cannot glitch the LCD.
     void ReleaseDeepSleepHolds() {
-        static_assert(sizeof(PANEL_PINS) == sizeof(PANEL_LEVELS),
-                      "one safe level per LCD pin");
+        static_assert(sizeof(PANEL_PINS) == sizeof(PANEL_LEVELS), "one safe level per LCD pin");
         gpio_deep_sleep_hold_dis();
 
         // Held by the sleep layer when it armed the GPIO0 key wakeup.
@@ -657,8 +813,7 @@ private:
             }
             err = gpio_hold_dis(pin);
             if (err != ESP_OK) {
-                ESP_LOGW(TAG, "LCD GPIO%d hold release failed: %s", (int)pin,
-                         esp_err_to_name(err));
+                ESP_LOGW(TAG, "LCD GPIO%d hold release failed: %s", (int)pin, esp_err_to_name(err));
             }
         }
         ESP_LOGI(TAG, "Deep-sleep pin holds released");
@@ -680,9 +835,8 @@ private:
         // PowerSaveTimer::WakeUp() runs on the esp_timer task because the button
         // task calls it, so everything that touches LVGL, the codec or Wi-Fi has
         // to go through the main task.
-        power_save_timer_->OnExitSleepMode([this]() {
-            Application::GetInstance().Schedule([this]() { WakeFromIdle(); });
-        });
+        power_save_timer_->OnExitSleepMode(
+            [this]() { Application::GetInstance().Schedule([this]() { WakeFromIdle(); }); });
         power_save_timer_->OnShutdownRequest([this]() { OnSoftSleepDeadline(); });
         power_save_timer_->SetEnabled(true);
     }
@@ -896,8 +1050,8 @@ private:
         // The first argument is a pin bit *mask*, not a pin number. Passing
         // GPIO_NUM_0 (value 0) is rejected as an invalid mask and would leave
         // the device in a deep sleep that no key can end.
-        err = esp_sleep_enable_gpio_wakeup_on_hp_periph_powerdown(
-            1ULL << GPIO_NUM_0, ESP_GPIO_WAKEUP_GPIO_LOW);
+        err = esp_sleep_enable_gpio_wakeup_on_hp_periph_powerdown(1ULL << GPIO_NUM_0,
+                                                                  ESP_GPIO_WAKEUP_GPIO_LOW);
         if (err != ESP_OK) {
             // A wakeup source is mandatory: without one the device would only
             // come back on a power cycle. A timed wake keeps it recoverable.
@@ -935,8 +1089,7 @@ private:
         if (es8311_handle_ == nullptr) {
             return ESP_ERR_INVALID_STATE;
         }
-        return i2c_master_transmit_receive(es8311_handle_, &reg, 1, value, 1,
-                                           kEs8311I2cTimeoutMs);
+        return i2c_master_transmit_receive(es8311_handle_, &reg, 1, value, 1, kEs8311I2cTimeoutMs);
     }
 
     // One pass over the BSP's suspend sequence, then a readback of the registers
@@ -959,8 +1112,9 @@ private:
         for (const auto& item : kEs8311SuspendVerify) {
             uint8_t actual = 0;
             if (ReadEs8311Reg(item.reg, &actual) != ESP_OK || actual != item.value) {
-                ESP_LOGE(TAG, "ES8311 suspend verify failed (attempt %d, REG%02X "
-                              "expected=0x%02X actual=0x%02X)",
+                ESP_LOGE(TAG,
+                         "ES8311 suspend verify failed (attempt %d, REG%02X "
+                         "expected=0x%02X actual=0x%02X)",
                          attempt, item.reg, item.value, actual);
                 valid = false;
             }
@@ -1045,8 +1199,7 @@ private:
             ESP_LOGE(TAG, "Backlight PWM stop failed: %s", esp_err_to_name(err));
         }
 
-        static_assert(sizeof(PANEL_PINS) == sizeof(PANEL_LEVELS),
-                      "one safe level per LCD pin");
+        static_assert(sizeof(PANEL_PINS) == sizeof(PANEL_LEVELS), "one safe level per LCD pin");
 
         for (size_t i = 0; i < sizeof(PANEL_PINS) / sizeof(PANEL_PINS[0]); i++) {
             gpio_num_t pin = PANEL_PINS[i];
@@ -1065,8 +1218,7 @@ private:
                 err = gpio_set_level(pin, PANEL_LEVELS[i]);
             }
             if (err != ESP_OK) {
-                ESP_LOGE(TAG, "LCD GPIO%d safe level failed: %s", (int)pin,
-                         esp_err_to_name(err));
+                ESP_LOGE(TAG, "LCD GPIO%d safe level failed: %s", (int)pin, esp_err_to_name(err));
                 continue;
             }
             err = gpio_hold_en(pin);
@@ -1079,8 +1231,8 @@ private:
     }
 
     static constexpr gpio_num_t PANEL_PINS[] = {
-        DISPLAY_SPI_CS_PIN, DISPLAY_SPI_SCK_PIN, DISPLAY_SPI_MOSI_PIN,
-        DISPLAY_DC_PIN, DISPLAY_BACKLIGHT_PIN,
+        DISPLAY_SPI_CS_PIN, DISPLAY_SPI_SCK_PIN,   DISPLAY_SPI_MOSI_PIN,
+        DISPLAY_DC_PIN,     DISPLAY_BACKLIGHT_PIN,
     };
     // The panel must not be selected while the chip sleeps, so CS stays high and
     // every other LCD line stays low.
@@ -1090,7 +1242,8 @@ private:
         AUDIO_I2S_GPIO_DOUT, AUDIO_I2S_GPIO_DIN,
     };
     static constexpr gpio_num_t I2C_PINS[] = {
-        AUDIO_CODEC_I2C_SDA_PIN, AUDIO_CODEC_I2C_SCL_PIN,
+        AUDIO_CODEC_I2C_SDA_PIN,
+        AUDIO_CODEC_I2C_SCL_PIN,
     };
 
 public:
@@ -1106,27 +1259,15 @@ public:
 
     virtual AudioCodec* GetAudioCodec() override {
         static AiPassportAudioCodec audio_codec(
-            codec_i2c_bus_,
-            I2C_NUM_0,
-            AUDIO_INPUT_SAMPLE_RATE,
-            AUDIO_OUTPUT_SAMPLE_RATE,
-            AUDIO_I2S_GPIO_MCLK,
-            AUDIO_I2S_GPIO_BCLK,
-            AUDIO_I2S_GPIO_WS,
-            AUDIO_I2S_GPIO_DOUT,
-            AUDIO_I2S_GPIO_DIN,
-            AUDIO_CODEC_PA_PIN,
-            AUDIO_CODEC_ES8311_ADDR);
+            codec_i2c_bus_, I2C_NUM_0, AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
+            AUDIO_I2S_GPIO_MCLK, AUDIO_I2S_GPIO_BCLK, AUDIO_I2S_GPIO_WS, AUDIO_I2S_GPIO_DOUT,
+            AUDIO_I2S_GPIO_DIN, AUDIO_CODEC_PA_PIN, AUDIO_CODEC_ES8311_ADDR);
         return &audio_codec;
     }
 
-    virtual Display* GetDisplay() override {
-        return display_;
-    }
+    virtual Display* GetDisplay() override { return display_; }
 
-    virtual Led* GetLed() override {
-        return &menu_led_;
-    }
+    virtual Led* GetLed() override { return &menu_led_; }
 
     virtual Backlight* GetBacklight() override {
         static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);

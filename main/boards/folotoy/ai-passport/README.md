@@ -9,9 +9,12 @@ What this board actually has:
 
 - **No camera.** `GetCamera()` is the base implementation.
 - **No status LED.** Nothing is wired to a GPIO LED. `GetLed()` is not
-  `NoLed`: it returns a hook whose only job is to close the settings list
-  when the device leaves idle, including immediately before a notification
-  popup. It does not blink or drive a pin.
+  `NoLed`: it returns a hook that closes the settings list when the device
+  leaves idle (including immediately before a notification popup), finishes a
+  push-to-talk release that arrived while the device was still connecting,
+  updates the status text for listening, thinking, and speaking, and wakes a dimmed
+  backlight for those phases and for connecting. It does not blink or drive
+  a pin.
 - **No acoustic echo cancellation.** Device-side and server-side AEC both need the
   PSRAM audio-processor path (ESP32-S3, P4, or S31). This is an ESP32-C3 with no
   PSRAM, and the board is not on the device-AEC allow list.
@@ -117,21 +120,109 @@ dim, soft-sleep, or deep-sleep panel sequence. Confirm on hardware that the
 black pixels sit under the bezel rather than eating the status icons; adjust
 `PASSPORT_SCREEN_RADIUS` if the glass is different.
 
+### Subtitles
+
+Chat and TTS text use the default message style (not the WeChat bubble list,
+which keeps a widget per message). The label wraps, and it lives in a fixed
+viewport derived from the mask:
+
+- The safe rect is the longest run of rows whose visible span is the full
+  240 px width. For this 240×320 panel and a 30 px radius that is
+  `(x=0, y=30, w=240, h=260)`.
+- The subtitle viewport is the whole-line block under the centered 32 px
+  emotion image, bottom-aligned in that safe rect, then narrowed to the
+  rows' common visible span. The host test uses a 26 px line, which lands at
+  `(x=0, y=186, w=240, h=104)` (4 lines). The firmware measures the live text
+  font and logs the rect it applied (`Safe area ... subtitle ...`). A
+  different font moves it; the numbers come from `passport_subtitle_viewport`,
+  not from a second set of constants.
+- The status bar stays on the top edge (`LV_ALIGN_TOP_MID`, y = 0), overlapping
+  the icon row the way the stock layout does. The corner mask covers only the
+  outer pixels of that row; the centered status text sits in the visible
+  middle. Moving the bar down by the radius is what took it off the top.
+  The status line is clipped instead of circular-scrolled, so it does not
+  redraw every frame. The low-battery popup still sits in the safe rect.
+- Listening, speaking, and thinking are that status text only. A second chip
+  with the same string showed 聆听中 twice, so the chip is not created.
+
+The subtitle bar is anchored top-left at that viewport. The stock widget is
+`LV_ALIGN_BOTTOM_MID`, and LVGL 9 treats a later `lv_obj_set_pos` as an offset
+from that anchor, so `set_pos(0, 186)` on a 104 px bar lands at y = 402, below
+the panel. That off-screen child is what showed up as a scrollbar instead of
+text. The bar is not scrollable and its scrollbar is off. Long text is paged
+by moving the label (`passport_subtitle_label_y`), not by scrolling the parent.
+The label uses the theme text color on the theme background, in both the light
+and dark themes.
+
+`passport_subtitle_page_count` / `passport_subtitle_page_offset` split the
+wrapped label into viewport-sized pages and a 2.5 s timer
+(`kPassportSubtitlePageMs`) steps between them with `LV_ANIM_OFF`. The last
+page is clamped so the tail stays on screen. Each TTS `sentence_start`
+replaces the label and restarts at page 0, so a streaming sentence is shown
+from its first line. One page pauses the timer. The settings list pauses it
+too and resumes when the list closes. Short text still fits on one page and
+does not scroll.
+
 ## Controls
 
-The three physical keys map to XiaoZhi's voice-assistant actions:
+The three physical keys share GPIO0 (ADC1_CH0). There is no separate boot
+button. XiaoZhi reads the ladder as three independent ADC buttons (the same
+pattern as the ESP-BOX-Lite).
 
-- **OK** — single click: toggle the chat state (or enter Wi-Fi config mode
-  while starting up). Hold about 2 s while idle: open or close the settings list
+- **OK short click** — toggle the chat state, enter Wi-Fi config while
+  starting, or toggle the speaker test on the Wi-Fi screen. A slow tap under
+  one second is still this click. The click is ignored only after
+  push-to-talk has actually called `StartListening()`. If that start bails
+  (settings open, already listening, connecting, or no Wi-Fi), the click
+  still runs.
+- **OK hold** — push-to-talk, and only when the press begins in idle or
+  speaking. After 1 s (`kPassportPttArmMs`) the board calls
+  `Application::StartListening()` in manual-stop mode, the same API other
+  boards use for a held key. Releasing that hold calls `StopListening()`. A
+  press that begins while already listening does not arm and does not call
+  `StopListening()` on release, so it cannot cut off an auto-mode session a
+  click already started; the click itself still toggles chat. A hold longer
+  than the 2 s long-press threshold keeps the microphone open: that long
+  press does not cancel the utterance and does not open settings. The button
+  component does not also emit a click for that hold, so the board clears the
+  click-suppress bit when the long press is recognized and the next short tap
+  still toggles chat. The press
+  that wakes the device out of soft or deep sleep is still dropped by the
+  wake-key guard, so it does not start listening.
+- **OK double-click** — while idle and allowed to sleep, open the settings
+  list. The same double-click, or a 2 s hold while no push-to-talk gesture
+  is in progress, closes the list. A double-click during push-to-talk does
+  not open it.
 - **UP** — single click: volume +10; long press: max volume
 - **DOWN** — single click: volume -10; long press: mute
 
-Because the ladder shares one ADC pin, XiaoZhi reads it as three
-independent ADC buttons (the same pattern as the ESP-BOX-Lite).
+### Conversation feedback
+
+There is no `kDeviceStateThinking`, and there is no second line for these
+phases. The status bar already shows them. After `StopListening` the device
+is idle while the audio channel is still open; that gap shows the localized
+`THINKING` string (`Thinking...` in en-US, `等待中...` in zh-CN,
+`お待ちください...` in ja-JP). `思` and `考` are not in
+`font_noto_sans_basic_20_4` (they are in the common assets font). `等` and
+`待` are in the linked font, so the status text renders before assets load
+too. Japanese reuses the please-wait string because `待機中...` is the
+standby label. Korean and Vietnamese use the same font constraint. Listening
+shows `LISTENING`. Speaking and notifying show `SPEAKING`. Thinking is not
+shown when an error alert is up, or when the channel is already closed.
+Entering the gap calls `LvglDisplay::SetStatus` with `THINKING` immediately,
+including when the clock has no NTP time yet, and leaving the gap restores
+the clock or `STANDBY`. `Alert()` is not rewritten. The user's last line
+stays on screen through that gap. Closing the audio channel while idle
+clears the thinking status immediately.
+
+Those phases, and connecting (whose only cue is the existing "Connecting..."
+status line), call `PowerSaveTimer::WakeUp()`. That restores a dimmed
+backlight. A plain return to idle does not wake the screen, so the 60 s dim
+still runs. No extra sleep timer is added. Wake word stays off.
 
 ### Settings list
 
-Hold OK while idle and not in a conversation. The list is drawn on top of the
+Double-click OK while idle and not in a conversation. The list is drawn on top of the
 existing chat screen (it does not replace that screen):
 
 - **Brightness** — up/down steps by 10, from 10% to 100%, and saves the existing
@@ -141,7 +232,8 @@ existing chat screen (it does not replace that screen):
   calls `SetBrightness` without the permanent flag.
 - **Theme** — short OK toggles light and dark and saves the existing `display` /
   `theme` key.
-- **Back** — short OK closes the list. Holding OK also closes it from any page.
+- **Back** — short OK closes the list. A 2 s hold also closes it from any page.
+  That hold no longer opens the list; double-click does.
 
 While the list is open, up/down do not change the volume. They do again once it
 closes. Leaving idle closes the list: connecting, listening, speaking, and
@@ -158,6 +250,11 @@ leaving the list up still dims at 60 s and soft-sleeps at 360 s. A separate
 "screen off after 3 minutes, but keep listening" timer is intentionally not
 added: it would race this policy, and it would blank the panel during
 listening, which `CanEnterSleepMode()` does not allow. Wake word stays off.
+Listening, the post-release thinking gap, speaking, and connecting call
+`WakeUp()` so a panel that already dimmed lights up again. Once the dim stage
+has started, `PowerSaveTimer` does not leave it just because sleep is no
+longer allowed; `WakeUp()` is what restores the backlight. Soft sleep is still
+gated by `CanEnterSleepMode()`.
 
 ## Power management
 
@@ -351,7 +448,13 @@ the fallback.
 Not verified: the idle, soft-sleep and deep-sleep currents (the 20 mA above is an
 estimate from the parts list, not a measurement); and whether disabling
 `CONFIG_ESP_SLEEP_GPIO_ENABLE_INTERNAL_RESISTORS` saves anything on top of the
-external 10 kOhm pull-up. A successful build is not hardware validation.
+external 10 kOhm pull-up. Also not verified on the device: wrapped subtitles
+staying inside the 30 px corners, paging a long TTS sentence and restarting at
+the first line of the next sentence, OK hold/release push-to-talk (including a
+hold past 2 s, a release while still connecting, and a tap that still toggles
+chat), double-click opening settings, and the listening / thinking /
+speaking line next to the settings list and the dim / soft-sleep wake.
+A successful build is not hardware validation.
 
 A note on `i2s_common: i2s_channel_disable ... has not been enabled yet` in the log:
 it comes from `esp_codec_dev`'s own pending-disable bookkeeping when the

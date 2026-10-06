@@ -23,6 +23,7 @@
         "CONNECTED_TO": "Terhubung ke ",
         "LISTENING": "Mendengarkan...",
         "SPEAKING": "Berbicara...",
+        "THINKING": "Berpikir...",
         "SERVER_NOT_FOUND": "Mencari layanan yang tersedia",
         "SERVER_NOT_CONNECTED": "Tidak dapat terhubung ke layanan, coba lagi nanti",
         "SERVER_TIMEOUT": "Waktu respons habis",

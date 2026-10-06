@@ -1,5 +1,6 @@
 #include "passport_display.h"
 
+#include "application.h"
 #include "assets/lang_config.h"
 #include "board.h"
 #include "lvgl_theme.h"
@@ -9,6 +10,8 @@
 #include <esp_log.h>
 #include <lvgl.h>
 
+#include <cstring>
+#include <ctime>
 #include <string>
 
 #define TAG "PassportDisp"
@@ -76,13 +79,26 @@ PassportDisplay::PassportDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_pan
     ESP_LOGI(TAG, "Rounded screen mask radius=%d (outer corners black)", PASSPORT_SCREEN_RADIUS);
 }
 
+PassportDisplay::~PassportDisplay() {
+    if (subtitle_timer_ != nullptr) {
+        lv_timer_delete(subtitle_timer_);
+        subtitle_timer_ = nullptr;
+    }
+    if (activity_label_ != nullptr) {
+        lv_obj_del(activity_label_);
+        activity_label_ = nullptr;
+    }
+}
+
 void PassportDisplay::SetupUI() {
     LcdDisplay::SetupUI();
+    ApplyGlassSafeArea();
     EnsureMenu();
 }
 
 void PassportDisplay::SetTheme(Theme* theme) {
     LcdDisplay::SetTheme(theme);
+    ApplyGlassSafeArea();
     ApplyMenuTheme();
     if (page_ != Page::kClosed) {
         RenderMenu();
@@ -90,17 +106,345 @@ void PassportDisplay::SetTheme(Theme* theme) {
 }
 
 void PassportDisplay::SetChatMessage(const char* role, const char* content) {
-    (void)role;
     // Leaving idle closes the list from the board LED hook, including an empty
     // system line and notify audio before any subtitle. A non-empty message
     // still closes it when the device stays idle (an alert does that).
     if (page_ != Page::kClosed && content != nullptr && content[0] != '\0') {
         CloseMenu();
     }
+    // Channel close schedules an empty system line and then idle. Idle is
+    // already the state, so no second state event arrives. Drop thinking here.
+    auto& app = Application::GetInstance();
+    if (PassportThinkingClears(activity_, app.GetDeviceState(), app.IsAudioChannelOpened()) &&
+        (role == nullptr || std::strcmp(role, "system") == 0) &&
+        (content == nullptr || content[0] == '\0')) {
+        activity_ = PassportActivity::kNone;
+        ShowActivityLabel();
+        RestoreIdleStatus();
+    }
     LcdDisplay::SetChatMessage(role, content);
+    RefreshSubtitlePages();
+}
+
+void PassportDisplay::ClearChatMessages() {
+    // The idle handler clears chat as it enters the post-listen gap. Keep the
+    // user's STT line up while thinking. Other boards still clear.
+    if (activity_ == PassportActivity::kThinking) {
+        // The idle handler writes STANDBY after NoteDeviceState, and the clock
+        // never replaces it when the year is still before 2025. Put THINKING
+        // back on this same turn.
+        ShowThinkingStatus();
+        return;
+    }
+    LcdDisplay::ClearChatMessages();
+    RefreshSubtitlePages();
+}
+
+void PassportDisplay::ApplyGlassSafeArea() {
+    if (!IsSetupUICalled() || bottom_bar_ == nullptr || chat_message_label_ == nullptr) {
+        return;
+    }
+    DisplayLockGuard lock(this);
+    if (!lock) {
+        return;
+    }
+
+    const lv_font_t* font = lv_obj_get_style_text_font(chat_message_label_, LV_PART_MAIN);
+    int32_t line_height = font != nullptr ? lv_font_get_line_height(font) : 0;
+    if (line_height <= 0) {
+        font = lv_obj_get_style_text_font(lv_screen_active(), LV_PART_MAIN);
+        line_height = font != nullptr ? lv_font_get_line_height(font) : 0;
+    }
+    if (line_height <= 0) {
+        ESP_LOGW(TAG, "Text font has no line height; subtitle viewport unchanged");
+        return;
+    }
+    line_height_ = line_height;
+
+    // Reserve the 32 px collection even when the boot icon is shorter, so the
+    // first emotion image does not land on the subtitle.
+    int32_t emoji_px = kPassportEmojiSize;
+    if (emoji_box_ != nullptr) {
+        lv_obj_update_layout(emoji_box_);
+        const int32_t box_h = lv_obj_get_height(emoji_box_);
+        if (box_h > emoji_px) {
+            emoji_px = box_h;
+        }
+    }
+
+    passport_rect_t safe;
+    passport_rect_t subtitle;
+    if (!passport_glass_safe_rect(width_, height_, PASSPORT_SCREEN_RADIUS, &safe) ||
+        !passport_subtitle_viewport(width_, height_, PASSPORT_SCREEN_RADIUS, line_height,
+                                    (emoji_px + 1) / 2, &subtitle)) {
+        ESP_LOGW(TAG, "Glass safe area does not fit a subtitle line");
+        return;
+    }
+    if (!passport_rect_inside_glass(&safe, width_, height_, PASSPORT_SCREEN_RADIUS) ||
+        !passport_rect_inside_glass(&subtitle, width_, height_, PASSPORT_SCREEN_RADIUS)) {
+        ESP_LOGW(TAG, "Computed subtitle rect is outside the glass mask");
+        return;
+    }
+    safe_rect_ = safe;
+    subtitle_rect_ = subtitle;
+
+    // The corner mask blacks only the outer pixels of the top row. The
+    // centered status text fits in that visible middle, so the icon row and
+    // the status bar stay on y = 0. Insetting them by the radius dropped the
+    // status line off the top of the glass.
+    lv_obj_t* screen = lv_screen_active();
+    lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(screen, LV_SCROLLBAR_MODE_OFF);
+    passport_widget_place_t status_place;
+    passport_status_bar_place(&status_place);
+    const lv_align_t status_align =
+        status_place.anchor == PASSPORT_ANCHOR_TOP_MID ? LV_ALIGN_TOP_MID : LV_ALIGN_TOP_LEFT;
+    if (top_bar_ != nullptr) {
+        lv_obj_align(top_bar_, status_align, status_place.x, status_place.y);
+    }
+    if (status_bar_ != nullptr) {
+        lv_obj_align(status_bar_, status_align, status_place.x, status_place.y);
+    }
+    if (status_label_ != nullptr) {
+        lv_label_set_long_mode(status_label_, LV_LABEL_LONG_CLIP);
+    }
+    if (notification_label_ != nullptr) {
+        lv_label_set_long_mode(notification_label_, LV_LABEL_LONG_CLIP);
+    }
+
+    lv_obj_update_layout(lv_screen_active());
+    top_reserve_ = 0;
+    if (status_bar_ != nullptr) {
+        top_reserve_ = lv_obj_get_height(status_bar_);
+    }
+    if (top_bar_ != nullptr && lv_obj_get_height(top_bar_) > top_reserve_) {
+        top_reserve_ = lv_obj_get_height(top_bar_);
+    }
+
+    // Fixed viewport. The stock bar is LV_ALIGN_BOTTOM_MID, and LVGL 9 treats
+    // a later set_pos as an offset from that anchor, which parks this 104 px
+    // bar below the panel. Anchor it top-left at the viewport instead.
+    // Paging moves the label; the bar itself is not scrollable, so it does
+    // not draw a scrollbar in place of the text.
+    passport_widget_place_t subtitle_place;
+    passport_subtitle_bar_place(&subtitle, &subtitle_place);
+    lv_obj_align(bottom_bar_, LV_ALIGN_TOP_LEFT, subtitle_place.x, subtitle_place.y);
+    lv_obj_set_size(bottom_bar_, subtitle.width, subtitle.height);
+    lv_obj_set_style_pad_all(bottom_bar_, 0, 0);
+    lv_obj_set_style_border_width(bottom_bar_, 0, 0);
+    lv_obj_set_scrollbar_mode(bottom_bar_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_scroll_dir(bottom_bar_, LV_DIR_NONE);
+    lv_obj_remove_flag(bottom_bar_, LV_OBJ_FLAG_SCROLLABLE);
+    auto* theme = static_cast<LvglTheme*>(current_theme_);
+    if (theme != nullptr) {
+        lv_obj_set_style_bg_color(bottom_bar_, theme->background_color(), 0);
+        lv_obj_set_style_bg_opa(bottom_bar_, LV_OPA_COVER, 0);
+        lv_obj_set_style_text_color(bottom_bar_, theme->text_color(), 0);
+        lv_obj_set_style_text_color(chat_message_label_, theme->text_color(), 0);
+    }
+
+    lv_label_set_long_mode(chat_message_label_, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(chat_message_label_, subtitle.width);
+    lv_obj_set_height(chat_message_label_, LV_SIZE_CONTENT);
+    lv_obj_set_style_text_align(chat_message_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_remove_flag(chat_message_label_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(chat_message_label_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_align(chat_message_label_, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_anim_delete(chat_message_label_, nullptr);
+
+    if (low_battery_popup_ != nullptr) {
+        lv_obj_update_layout(low_battery_popup_);
+        const int32_t popup_w = lv_obj_get_width(low_battery_popup_);
+        const int32_t popup_h = lv_obj_get_height(low_battery_popup_);
+        int32_t popup_y = safe.y + safe.height - popup_h;
+        if (popup_y < safe.y) {
+            popup_y = safe.y;
+        }
+        lv_obj_set_pos(low_battery_popup_, safe.x + (safe.width - popup_w) / 2, popup_y);
+    }
+
+    if (subtitle_timer_ == nullptr) {
+        subtitle_timer_ = lv_timer_create(SubtitleTimerCb, kPassportSubtitlePageMs, this);
+        if (subtitle_timer_ != nullptr) {
+            lv_timer_pause(subtitle_timer_);
+        }
+    }
+
+    ESP_LOGI(TAG, "Safe area %ldx%ld at (%ld,%ld), subtitle %ldx%ld at (%ld,%ld), line %ld",
+             static_cast<long>(safe.width), static_cast<long>(safe.height),
+             static_cast<long>(safe.x), static_cast<long>(safe.y),
+             static_cast<long>(subtitle.width), static_cast<long>(subtitle.height),
+             static_cast<long>(subtitle.x), static_cast<long>(subtitle.y),
+             static_cast<long>(line_height));
+    PlaceActivityLabelLocked();
+    RefreshSubtitlePagesLocked();
+}
+
+void PassportDisplay::RefreshSubtitlePages() {
+    DisplayLockGuard lock(this);
+    if (!lock) {
+        return;
+    }
+    RefreshSubtitlePagesLocked();
+}
+
+void PassportDisplay::RefreshSubtitlePagesLocked() {
+    if (chat_message_label_ == nullptr || bottom_bar_ == nullptr) {
+        return;
+    }
+    lv_obj_update_layout(bottom_bar_);
+    subtitle_content_height_ = lv_obj_get_height(chat_message_label_);
+    subtitle_viewport_height_ = lv_obj_get_height(bottom_bar_);
+    subtitle_page_count_ =
+        passport_subtitle_page_count(subtitle_content_height_, subtitle_viewport_height_);
+    subtitle_page_ = 0;
+    PlaceSubtitleLabelLocked();
+
+    const bool hidden = lv_obj_has_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
+    const bool turn = subtitle_page_count_ > 1 && !hidden && page_ == Page::kClosed;
+    if (subtitle_timer_ == nullptr) {
+        return;
+    }
+    if (turn) {
+        lv_timer_resume(subtitle_timer_);
+        lv_timer_reset(subtitle_timer_);
+    } else {
+        lv_timer_pause(subtitle_timer_);
+    }
+}
+
+void PassportDisplay::SubtitleTimerCb(lv_timer_t* timer) {
+    // Runs on the LVGL task, which already holds the display lock.
+    auto* self = static_cast<PassportDisplay*>(lv_timer_get_user_data(timer));
+    if (self != nullptr) {
+        self->AdvanceSubtitlePageLocked();
+    }
+}
+
+void PassportDisplay::AdvanceSubtitlePageLocked() {
+    if (subtitle_page_count_ <= 1 || bottom_bar_ == nullptr) {
+        return;
+    }
+    if (page_ != Page::kClosed || lv_obj_has_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN)) {
+        if (subtitle_timer_ != nullptr) {
+            lv_timer_pause(subtitle_timer_);
+        }
+        return;
+    }
+    subtitle_page_ = (subtitle_page_ + 1) % subtitle_page_count_;
+    PlaceSubtitleLabelLocked();
+}
+
+void PassportDisplay::PlaceSubtitleLabelLocked() {
+    if (chat_message_label_ == nullptr) {
+        return;
+    }
+    const int32_t offset = passport_subtitle_page_offset(subtitle_page_, subtitle_content_height_,
+                                                         subtitle_viewport_height_);
+    lv_obj_align(chat_message_label_, LV_ALIGN_TOP_LEFT, 0, passport_subtitle_label_y(offset));
+}
+
+PassportActivity PassportDisplay::NoteDeviceState(DeviceState state) {
+    auto& app = Application::GetInstance();
+    const PassportActivity previous = activity_;
+    activity_ =
+        PassportResolveActivity(activity_, state, app.IsAudioChannelOpened(), app.HasLastError());
+    ShowActivityLabel();
+    if (activity_ == PassportActivity::kThinking && previous != PassportActivity::kThinking) {
+        ShowThinkingStatus();
+    } else if (previous == PassportActivity::kThinking &&
+               activity_ != PassportActivity::kThinking && state == kDeviceStateIdle) {
+        RestoreIdleStatus();
+    }
+    return activity_;
+}
+
+void PassportDisplay::ShowThinkingStatus() {
+    LvglDisplay::SetStatus(Lang::Strings::THINKING);
+    HoldOffIdleClock();
+}
+
+void PassportDisplay::RestoreIdleStatus() {
+    if (Application::GetInstance().HasLastError()) {
+        return;
+    }
+    time_t now = time(nullptr);
+    struct tm* tm_now = localtime(&now);
+    if (tm_now != nullptr && tm_now->tm_year >= 2025 - 1900) {
+        char time_str[16];
+        strftime(time_str, sizeof(time_str), "%H:%M", tm_now);
+        last_displayed_clock_min_ = tm_now->tm_hour * 60 + tm_now->tm_min;
+        LvglDisplay::SetStatus(time_str);
+        return;
+    }
+    LvglDisplay::SetStatus(Lang::Strings::STANDBY);
+}
+
+void PassportDisplay::HoldOffIdleClock() {
+    time_t now = time(nullptr);
+    struct tm* tm_now = localtime(&now);
+    if (tm_now == nullptr || tm_now->tm_year < 2025 - 1900) {
+        return;
+    }
+    // Same gate as LvglDisplay::UpdateStatusBar. A stored minute stops that
+    // path from writing HH:MM over THINKING, including the first idle tick.
+    last_displayed_clock_min_ = tm_now->tm_hour * 60 + tm_now->tm_min;
+}
+
+void PassportDisplay::ShowActivityLabel() {
+    DisplayLockGuard lock(this);
+    if (!lock) {
+        return;
+    }
+    ShowActivityLabelLocked();
+}
+
+void PassportDisplay::PlaceActivityLabelLocked() {
+    // Listening, speaking, and thinking are already on the status bar.
+    // Do not create a second label with the same string.
+    if (activity_label_ != nullptr) {
+        lv_obj_add_flag(activity_label_, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void PassportDisplay::ShowActivityLabelLocked() {
+    if (activity_label_ == nullptr) {
+        return;
+    }
+    const char* text = nullptr;
+    switch (activity_) {
+        case PassportActivity::kListening:
+            text = Lang::Strings::LISTENING;
+            break;
+        case PassportActivity::kSpeaking:
+            text = Lang::Strings::SPEAKING;
+            break;
+        case PassportActivity::kThinking:
+            text = Lang::Strings::THINKING;
+            break;
+        case PassportActivity::kNone:
+            break;
+    }
+    // The status bar already shows these words. A chip here repeated 聆听中.
+    if (text == nullptr || page_ != Page::kClosed || PassportActivityDuplicatesStatus(activity_)) {
+        lv_obj_add_flag(activity_label_, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_label_set_text(activity_label_, text);
+    lv_obj_remove_flag(activity_label_, LV_OBJ_FLAG_HIDDEN);
 }
 
 void PassportDisplay::UpdateStatusBar(bool update_all) {
+    auto& app = Application::GetInstance();
+    // Backup for a channel close that did not come through an empty system line.
+    if (PassportThinkingClears(activity_, app.GetDeviceState(), app.IsAudioChannelOpened())) {
+        activity_ = PassportActivity::kNone;
+        ShowActivityLabel();
+        RestoreIdleStatus();
+    } else if (activity_ == PassportActivity::kThinking &&
+               app.GetDeviceState() == kDeviceStateIdle) {
+        HoldOffIdleClock();
+    }
     LcdDisplay::UpdateStatusBar(update_all);
     if (page_ == Page::kClosed || low_battery_popup_ == nullptr) {
         return;
@@ -113,6 +457,8 @@ void PassportDisplay::UpdateStatusBar(bool update_all) {
         return;
     }
     HideMenuLocked();
+    RefreshSubtitlePagesLocked();
+    ShowActivityLabelLocked();
     ESP_LOGI(TAG, "Settings list closed for low battery");
 }
 
@@ -282,12 +628,19 @@ void PassportDisplay::RenderMenu() {
     // so drop the list instead and leave the popup on top.
     if (LowBatteryPopupVisible()) {
         HideMenuLocked();
+        RefreshSubtitlePagesLocked();
+        ShowActivityLabelLocked();
         ESP_LOGI(TAG, "Settings list closed for low battery");
         return;
     }
     lv_label_set_text(menu_label_, text.c_str());
     lv_obj_remove_flag(menu_panel_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(menu_panel_);
+    // The list covers the subtitle. Leave the page timer paused until it closes.
+    if (subtitle_timer_ != nullptr) {
+        lv_timer_pause(subtitle_timer_);
+    }
+    ShowActivityLabelLocked();
 }
 
 void PassportDisplay::OpenMenu() {
@@ -333,6 +686,8 @@ void PassportDisplay::CloseMenu() {
     }
     HideMenuLocked();
     ESP_LOGI(TAG, "Settings list closed");
+    RefreshSubtitlePagesLocked();
+    ShowActivityLabelLocked();
 }
 
 void PassportDisplay::HandleMenuAction(MenuAction action) {

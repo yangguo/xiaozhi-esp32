@@ -23,6 +23,7 @@
         "CONNECTED_TO": "Connecté à ",
         "LISTENING": "Écoute...",
         "SPEAKING": "Parole...",
+        "THINKING": "Réflexion...",
         "SERVER_NOT_FOUND": "Recherche d'un service disponible",
         "SERVER_NOT_CONNECTED": "Impossible de se connecter au service, veuillez réessayer plus tard",
         "SERVER_TIMEOUT": "Délai d'attente de réponse",

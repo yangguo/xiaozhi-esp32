@@ -23,6 +23,7 @@
         "CONNECTED_TO": "Yhdistetty ",
         "LISTENING": "Kuunnellaan...",
         "SPEAKING": "Puhutaan...",
+        "THINKING": "Mietitään...",
         "SERVER_NOT_FOUND": "Etsitään käytettävissä olevaa palvelua",
         "SERVER_NOT_CONNECTED": "Ei voi yhdistää palveluun, yritä myöhemmin",
         "SERVER_TIMEOUT": "Vastauksen aikakatkaisu",

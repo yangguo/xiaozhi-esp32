@@ -24,6 +24,7 @@
         "CONNECTED_TO": "Csatlakozva: ",
         "LISTENING": "Figyelés...",
         "SPEAKING": "Beszéd...",
+        "THINKING": "Gondolkodás...",
         "SERVER_NOT_FOUND": "Elérhető szolgáltatás keresése",
         "SERVER_NOT_CONNECTED": "A szolgáltatáshoz nem sikerült csatlakozni, kérjük, próbálja újra később",
         "SERVER_TIMEOUT": "A várakozási idő lejárt",

@@ -23,6 +23,7 @@
         "CONNECTED_TO": "Bağlandı ",
         "LISTENING": "Dinleniyor...",
         "SPEAKING": "Konuşuluyor...",
+        "THINKING": "Düşünülüyor...",
         "SERVER_NOT_FOUND": "Mevcut hizmet aranıyor",
         "SERVER_NOT_CONNECTED": "Hizmete bağlanılamıyor, lütfen daha sonra deneyin",
         "SERVER_TIMEOUT": "Yanıt zaman aşımı",

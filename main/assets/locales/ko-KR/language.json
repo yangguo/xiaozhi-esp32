@@ -24,6 +24,7 @@
         "CONNECTED_TO": "연결됨: ",
         "LISTENING": "듣는 중...",
         "SPEAKING": "말하는 중...",
+        "THINKING": "대기 중...",
         "SERVER_NOT_FOUND": "사용 가능한 서비스를 찾는 중",
         "SERVER_NOT_CONNECTED": "서비스에 연결할 수 없습니다. 나중에 다시 시도하세요",
         "SERVER_TIMEOUT": "응답 대기 시간 초과",
