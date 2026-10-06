@@ -57,6 +57,37 @@ int32_t passport_subtitle_page_count(int32_t content_height, int32_t viewport_he
 int32_t passport_subtitle_page_offset(int32_t page, int32_t content_height,
                                       int32_t viewport_height);
 
+// How a screen child is anchored. LVGL 9 treats style x/y as an offset from
+// this anchor, so a widget created with bottom-middle alignment cannot be
+// moved to an absolute y with lv_obj_set_pos alone.
+typedef enum {
+    PASSPORT_ANCHOR_TOP_LEFT = 0,
+    PASSPORT_ANCHOR_TOP_MID = 1,
+} passport_anchor_t;
+
+typedef struct {
+    passport_anchor_t anchor;
+    int32_t x;
+    int32_t y;
+    bool scrollable;
+} passport_widget_place_t;
+
+// Status and icon row. y is 0: the centered label sits in the visible middle
+// of the top row, which the corner mask does not cover.
+void passport_status_bar_place(passport_widget_place_t* out);
+
+// Subtitle viewport as an absolute top-left rectangle. Not scrollable: paging
+// moves the label instead of scrolling the parent, so LVGL draws no scrollbar.
+void passport_subtitle_bar_place(const passport_rect_t* viewport, passport_widget_place_t* out);
+
+// Label y inside that viewport. Negative values clip the lines above this page.
+int32_t passport_subtitle_label_y(int32_t page_offset);
+
+// Where LVGL 9 lays out a bottom-middle widget whose style y is `y_ofs`.
+// For the Passport viewport this is below the panel, which is why the text
+// never appeared in (0, 186, 240, 104).
+int32_t passport_bottom_mid_layout_y(int32_t parent_height, int32_t obj_height, int32_t y_ofs);
+
 // Zero RGB565 pixels that fall outside the rounded span. `buf` is one flush
 // strip in screen order; `stride` is the row stride in bytes. Coordinates are
 // the screen area being flushed (inclusive).

@@ -110,6 +110,20 @@ int main(int argc, char** argv) {
                (int)passport_subtitle_page_offset(page, content, viewport));
         return 0;
     }
+    if (argc == 2 && strcmp(argv[1], "place") == 0) {
+        passport_widget_place_t status;
+        passport_status_bar_place(&status);
+        printf("status %d %d %d %d\n", (int)status.anchor, (int)status.x, (int)status.y,
+               status.scrollable ? 1 : 0);
+        passport_rect_t viewport = {0, 186, 240, 104};
+        passport_widget_place_t subtitle;
+        passport_subtitle_bar_place(&viewport, &subtitle);
+        printf("subtitle %d %d %d %d\n", (int)subtitle.anchor, (int)subtitle.x, (int)subtitle.y,
+               subtitle.scrollable ? 1 : 0);
+        printf("bottom %d\n", (int)passport_bottom_mid_layout_y(320, 104, 186));
+        printf("label %d\n", (int)passport_subtitle_label_y(104));
+        return 0;
+    }
     if (argc == 9 && strcmp(argv[1], "activity") == 0) {
         passport_rect_t safe = {(int32_t)atoi(argv[2]), (int32_t)atoi(argv[3]),
                                 (int32_t)atoi(argv[4]), (int32_t)atoi(argv[5])};
@@ -124,7 +138,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     fprintf(stderr, "usage: span W H R | mask | safe W H R | subtitle W H R LINE HALF | "
-                    "inside W H R X Y W H | pages CONTENT VIEW PAGE | "
+                    "inside W H R X Y W H | pages CONTENT VIEW PAGE | place | "
                     "activity SX SY SW SH SUBY LINE RESERVE\n");
     return 2;
 }
@@ -277,6 +291,19 @@ class PassportScreenRoundingTests(unittest.TestCase):
         # 320 - 176 = 144 px, 5 lines of 26, bottom aligned at y=190.
         square = self._rect("subtitle", "240", "320", "0", "26", "16")
         self.assertEqual(square, (0, 190, 240, 130))
+
+    def test_status_stays_at_the_top_and_subtitle_is_not_scrolled(self):
+        # anchor 1 is top-middle, anchor 0 is top-left. The last field is scrollable.
+        status, subtitle, bottom, label = subprocess.check_output(
+            [str(self.binary), "place"], text=True
+        ).splitlines()
+        self.assertEqual(status, "status 1 0 0 0")
+        self.assertEqual(subtitle, "subtitle 0 0 186 0")
+        # LVGL 9 would lay out BOTTOM_MID plus set_pos(0, 186) at this y, below
+        # a 320 px panel, which is what left a scrollbar instead of the text.
+        self.assertEqual(bottom, "bottom 402")
+        self.assertGreater(int(bottom.split()[1]), 320)
+        self.assertEqual(label, "label -104")
 
     def test_subtitle_pages_clamp_the_last_page(self):
         def pages(content, viewport, page):

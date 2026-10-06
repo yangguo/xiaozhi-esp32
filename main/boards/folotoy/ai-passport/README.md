@@ -12,7 +12,7 @@ What this board actually has:
   `NoLed`: it returns a hook that closes the settings list when the device
   leaves idle (including immediately before a notification popup), finishes a
   push-to-talk release that arrived while the device was still connecting,
-  updates the listening / thinking / speaking line, and wakes a dimmed
+  updates the status text for listening, thinking, and speaking, and wakes a dimmed
   backlight for those phases and for connecting. It does not blink or drive
   a pin.
 - **No acoustic echo cancellation.** Device-side and server-side AEC both need the
@@ -136,20 +136,26 @@ viewport derived from the mask:
   font and logs the rect it applied (`Safe area ... subtitle ...`). A
   different font moves it; the numbers come from `passport_subtitle_viewport`,
   not from a second set of constants.
-- The status row and the low-battery popup sit in the same safe rect. The
-  status line is clipped instead of circular-scrolled, so it does not redraw
-  every frame.
-- The listening / thinking / speaking line is one clipped row between the
-  status bar and the subtitle (`passport_activity_line`). With a 26 px line
-  and a 28 px status row the host test places it at `(x=0, y=58, w=240, h=26)`.
-  The firmware measures the live status-row height and logs `Activity line ...`.
-  If that row would leave the safe rect or overlap the subtitle, the chip stays
-  hidden and the status text is the only cue.
+- The status bar stays on the top edge (`LV_ALIGN_TOP_MID`, y = 0), overlapping
+  the icon row the way the stock layout does. The corner mask covers only the
+  outer pixels of that row; the centered status text sits in the visible
+  middle. Moving the bar down by the radius is what took it off the top.
+  The status line is clipped instead of circular-scrolled, so it does not
+  redraw every frame. The low-battery popup still sits in the safe rect.
+- Listening, speaking, and thinking are that status text only. A second chip
+  with the same string showed 聆听中 twice, so the chip is not created.
 
-Long text is paged, not animated. A vertical LVGL scroll would invalidate the
-viewport on every frame and keep the SPI bus and the CPU busy on a C3 with no
-PSRAM. `passport_subtitle_page_count` / `passport_subtitle_page_offset` split
-the wrapped label into viewport-sized pages and a 2.5 s timer
+The subtitle bar is anchored top-left at that viewport. The stock widget is
+`LV_ALIGN_BOTTOM_MID`, and LVGL 9 treats a later `lv_obj_set_pos` as an offset
+from that anchor, so `set_pos(0, 186)` on a 104 px bar lands at y = 402, below
+the panel. That off-screen child is what showed up as a scrollbar instead of
+text. The bar is not scrollable and its scrollbar is off. Long text is paged
+by moving the label (`passport_subtitle_label_y`), not by scrolling the parent.
+The label uses the theme text color on the theme background, in both the light
+and dark themes.
+
+`passport_subtitle_page_count` / `passport_subtitle_page_offset` split the
+wrapped label into viewport-sized pages and a 2.5 s timer
 (`kPassportSubtitlePageMs`) steps between them with `LV_ANIM_OFF`. The last
 page is clamped so the tail stays on screen. Each TTS `sentence_start`
 replaces the label and restarts at page 0, so a streaming sentence is shown
@@ -192,24 +198,22 @@ pattern as the ESP-BOX-Lite).
 
 ### Conversation feedback
 
-Listening, the gap after release, and speaking each draw one clipped line in
-the safe area described above. There is no `kDeviceStateThinking`. After
-`StopListening` the device is idle while the audio channel is still open;
-that gap is the thinking phase and shows the localized `THINKING` string
-(`Thinking...` in en-US, `等待中...` in zh-CN, `お待ちください...` in ja-JP).
-`思` and `考` are not in `font_noto_sans_basic_20_4` (they are in the common
-assets font). `等` and `待` are in the linked font, so the chip renders
-before assets load too. Japanese reuses the please-wait string because
-`待機中...` is the standby label. Korean and Vietnamese use the same font
-constraint. Listening shows `LISTENING`. Speaking and notifying show
-`SPEAKING`. Thinking is not shown when an error alert is up, or when the
-channel is already closed. Entering the gap calls `LvglDisplay::SetStatus`
-with `THINKING` immediately, including when the clock has no NTP time yet,
-and leaving the gap restores the clock or `STANDBY`. `Alert()` is not
-rewritten. The user's last line stays on screen through that gap.
-The chip hides while the settings list is open and comes back when the list
-closes, including when a low-battery popup closes it. Closing the audio
-channel while idle clears the chip immediately.
+There is no `kDeviceStateThinking`, and there is no second line for these
+phases. The status bar already shows them. After `StopListening` the device
+is idle while the audio channel is still open; that gap shows the localized
+`THINKING` string (`Thinking...` in en-US, `等待中...` in zh-CN,
+`お待ちください...` in ja-JP). `思` and `考` are not in
+`font_noto_sans_basic_20_4` (they are in the common assets font). `等` and
+`待` are in the linked font, so the status text renders before assets load
+too. Japanese reuses the please-wait string because `待機中...` is the
+standby label. Korean and Vietnamese use the same font constraint. Listening
+shows `LISTENING`. Speaking and notifying show `SPEAKING`. Thinking is not
+shown when an error alert is up, or when the channel is already closed.
+Entering the gap calls `LvglDisplay::SetStatus` with `THINKING` immediately,
+including when the clock has no NTP time yet, and leaving the gap restores
+the clock or `STANDBY`. `Alert()` is not rewritten. The user's last line
+stays on screen through that gap. Closing the audio channel while idle
+clears the thinking status immediately.
 
 Those phases, and connecting (whose only cue is the existing "Connecting..."
 status line), call `PowerSaveTimer::WakeUp()`. That restores a dimmed

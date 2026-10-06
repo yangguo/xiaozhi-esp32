@@ -69,6 +69,7 @@ private:
     void RefreshSubtitlePages();
     // Caller holds the LVGL lock.
     void RefreshSubtitlePagesLocked();
+    void PlaceSubtitleLabelLocked();
     void AdvanceSubtitlePageLocked();
     static void SubtitleTimerCb(lv_timer_t* timer);
     void PlaceActivityLabelLocked();

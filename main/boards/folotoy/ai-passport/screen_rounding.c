@@ -198,6 +198,34 @@ int32_t passport_subtitle_page_count(int32_t content_height, int32_t viewport_he
     return (content_height + viewport_height - 1) / viewport_height;
 }
 
+void passport_status_bar_place(passport_widget_place_t* out) {
+    if (out == NULL) {
+        return;
+    }
+    out->anchor = PASSPORT_ANCHOR_TOP_MID;
+    out->x = 0;
+    out->y = 0;
+    out->scrollable = false;
+}
+
+void passport_subtitle_bar_place(const passport_rect_t* viewport, passport_widget_place_t* out) {
+    if (out == NULL) {
+        return;
+    }
+    out->anchor = PASSPORT_ANCHOR_TOP_LEFT;
+    out->x = viewport != NULL ? viewport->x : 0;
+    out->y = viewport != NULL ? viewport->y : 0;
+    out->scrollable = false;
+}
+
+int32_t passport_subtitle_label_y(int32_t page_offset) {
+    return page_offset > 0 ? -page_offset : 0;
+}
+
+int32_t passport_bottom_mid_layout_y(int32_t parent_height, int32_t obj_height, int32_t y_ofs) {
+    return y_ofs + parent_height - obj_height;
+}
+
 int32_t passport_subtitle_page_offset(int32_t page, int32_t content_height,
                                       int32_t viewport_height) {
     if (page < 0 || viewport_height <= 0 || content_height <= viewport_height) {

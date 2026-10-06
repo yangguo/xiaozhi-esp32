@@ -64,4 +64,11 @@ inline bool PassportThinkingClears(PassportActivity current, DeviceState state, 
     return current == PassportActivity::kThinking && state == kDeviceStateIdle && !channel_open;
 }
 
+// The status bar already shows LISTENING, SPEAKING, and THINKING. A second
+// chip with the same string is what put 聆听中 on screen twice.
+inline bool PassportActivityDuplicatesStatus(PassportActivity activity) {
+    return activity == PassportActivity::kListening || activity == PassportActivity::kSpeaking ||
+           activity == PassportActivity::kThinking;
+}
+
 #endif  // PASSPORT_ACTIVITY_H_

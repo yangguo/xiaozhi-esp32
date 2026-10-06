@@ -85,6 +85,15 @@ int main(int argc, char** argv) {
         printf("%s %d\n", activity_name(next), PassportActivityWakesScreen(next, state) ? 1 : 0);
         return 0;
     }
+    if (argc == 3 && strcmp(argv[1], "dup") == 0) {
+        PassportActivity activity;
+        if (!parse_activity(argv[2], &activity)) {
+            fprintf(stderr, "unknown activity\n");
+            return 2;
+        }
+        printf("%d\n", PassportActivityDuplicatesStatus(activity) ? 1 : 0);
+        return 0;
+    }
     if (argc == 5 && strcmp(argv[1], "clear") == 0) {
         PassportActivity current;
         DeviceState state;
@@ -98,7 +107,7 @@ int main(int argc, char** argv) {
     }
     if (argc != 3) {
         fprintf(stderr, "usage: CURRENT STATE | resolve CURRENT STATE open|closed ok|error | "
-                        "clear CURRENT STATE open|closed\n");
+                        "clear CURRENT STATE open|closed | dup ACTIVITY\n");
         return 2;
     }
     PassportActivity current;
@@ -216,6 +225,14 @@ class PassportActivityTests(unittest.TestCase):
                 [str(self.binary), "clear", "listening", "idle", "closed"], text=True
             ).strip(),
             "0",
+        )
+
+    def test_phase_text_is_not_repeated_beside_the_status_bar(self):
+        for name in ("listening", "speaking", "thinking"):
+            shown = subprocess.check_output([str(self.binary), "dup", name], text=True).strip()
+            self.assertEqual(shown, "1", name)
+        self.assertEqual(
+            subprocess.check_output([str(self.binary), "dup", "none"], text=True).strip(), "0"
         )
 
 

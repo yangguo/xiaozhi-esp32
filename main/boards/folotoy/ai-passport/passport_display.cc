@@ -188,14 +188,22 @@ void PassportDisplay::ApplyGlassSafeArea() {
     safe_rect_ = safe;
     subtitle_rect_ = subtitle;
 
-    // The corner caps are the rows above and below the safe rect. Icons and
-    // the status line move onto the first full-width row. CLIP replaces the
-    // circular scroll so a long status does not animate on every frame.
+    // The corner mask blacks only the outer pixels of the top row. The
+    // centered status text fits in that visible middle, so the icon row and
+    // the status bar stay on y = 0. Insetting them by the radius dropped the
+    // status line off the top of the glass.
+    lv_obj_t* screen = lv_screen_active();
+    lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(screen, LV_SCROLLBAR_MODE_OFF);
+    passport_widget_place_t status_place;
+    passport_status_bar_place(&status_place);
+    const lv_align_t status_align =
+        status_place.anchor == PASSPORT_ANCHOR_TOP_MID ? LV_ALIGN_TOP_MID : LV_ALIGN_TOP_LEFT;
     if (top_bar_ != nullptr) {
-        lv_obj_align(top_bar_, LV_ALIGN_TOP_LEFT, safe.x, safe.y);
+        lv_obj_align(top_bar_, status_align, status_place.x, status_place.y);
     }
     if (status_bar_ != nullptr) {
-        lv_obj_align(status_bar_, LV_ALIGN_TOP_LEFT, safe.x, safe.y);
+        lv_obj_align(status_bar_, status_align, status_place.x, status_place.y);
     }
     if (status_label_ != nullptr) {
         lv_label_set_long_mode(status_label_, LV_LABEL_LONG_CLIP);
@@ -213,26 +221,35 @@ void PassportDisplay::ApplyGlassSafeArea() {
         top_reserve_ = lv_obj_get_height(top_bar_);
     }
 
-    // Fixed viewport, wrap, and page by scrolling the label. A vertical
-    // LVGL animation would invalidate this region every frame; paging on a
-    // 2.5 s timer redraws only when the page changes. Each TTS sentence
-    // replaces the label text, and RefreshSubtitlePagesLocked starts again
-    // at the top of that sentence.
-    lv_obj_set_pos(bottom_bar_, subtitle.x, subtitle.y);
+    // Fixed viewport. The stock bar is LV_ALIGN_BOTTOM_MID, and LVGL 9 treats
+    // a later set_pos as an offset from that anchor, which parks this 104 px
+    // bar below the panel. Anchor it top-left at the viewport instead.
+    // Paging moves the label; the bar itself is not scrollable, so it does
+    // not draw a scrollbar in place of the text.
+    passport_widget_place_t subtitle_place;
+    passport_subtitle_bar_place(&subtitle, &subtitle_place);
+    lv_obj_align(bottom_bar_, LV_ALIGN_TOP_LEFT, subtitle_place.x, subtitle_place.y);
     lv_obj_set_size(bottom_bar_, subtitle.width, subtitle.height);
     lv_obj_set_style_pad_all(bottom_bar_, 0, 0);
+    lv_obj_set_style_border_width(bottom_bar_, 0, 0);
     lv_obj_set_scrollbar_mode(bottom_bar_, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_set_scroll_dir(bottom_bar_, LV_DIR_VER);
-    lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_remove_flag(bottom_bar_, LV_OBJ_FLAG_SCROLL_ELASTIC);
-    lv_obj_remove_flag(bottom_bar_, LV_OBJ_FLAG_SCROLL_MOMENTUM);
-    lv_obj_remove_flag(bottom_bar_, LV_OBJ_FLAG_SCROLL_CHAIN_VER);
+    lv_obj_set_scroll_dir(bottom_bar_, LV_DIR_NONE);
+    lv_obj_remove_flag(bottom_bar_, LV_OBJ_FLAG_SCROLLABLE);
+    auto* theme = static_cast<LvglTheme*>(current_theme_);
+    if (theme != nullptr) {
+        lv_obj_set_style_bg_color(bottom_bar_, theme->background_color(), 0);
+        lv_obj_set_style_bg_opa(bottom_bar_, LV_OPA_COVER, 0);
+        lv_obj_set_style_text_color(bottom_bar_, theme->text_color(), 0);
+        lv_obj_set_style_text_color(chat_message_label_, theme->text_color(), 0);
+    }
 
     lv_label_set_long_mode(chat_message_label_, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(chat_message_label_, subtitle.width);
     lv_obj_set_height(chat_message_label_, LV_SIZE_CONTENT);
     lv_obj_set_style_text_align(chat_message_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(chat_message_label_, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_remove_flag(chat_message_label_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(chat_message_label_, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_align(chat_message_label_, LV_ALIGN_TOP_LEFT, 0, 0);
     lv_anim_delete(chat_message_label_, nullptr);
 
     if (low_battery_popup_ != nullptr) {
@@ -281,7 +298,7 @@ void PassportDisplay::RefreshSubtitlePagesLocked() {
     subtitle_page_count_ =
         passport_subtitle_page_count(subtitle_content_height_, subtitle_viewport_height_);
     subtitle_page_ = 0;
-    lv_obj_scroll_to_y(bottom_bar_, 0, LV_ANIM_OFF);
+    PlaceSubtitleLabelLocked();
 
     const bool hidden = lv_obj_has_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
     const bool turn = subtitle_page_count_ > 1 && !hidden && page_ == Page::kClosed;
@@ -315,9 +332,16 @@ void PassportDisplay::AdvanceSubtitlePageLocked() {
         return;
     }
     subtitle_page_ = (subtitle_page_ + 1) % subtitle_page_count_;
+    PlaceSubtitleLabelLocked();
+}
+
+void PassportDisplay::PlaceSubtitleLabelLocked() {
+    if (chat_message_label_ == nullptr) {
+        return;
+    }
     const int32_t offset = passport_subtitle_page_offset(subtitle_page_, subtitle_content_height_,
                                                          subtitle_viewport_height_);
-    lv_obj_scroll_to_y(bottom_bar_, offset, LV_ANIM_OFF);
+    lv_obj_align(chat_message_label_, LV_ALIGN_TOP_LEFT, 0, passport_subtitle_label_y(offset));
 }
 
 PassportActivity PassportDisplay::NoteDeviceState(DeviceState state) {
@@ -376,32 +400,11 @@ void PassportDisplay::ShowActivityLabel() {
 }
 
 void PassportDisplay::PlaceActivityLabelLocked() {
-    if (safe_rect_.width <= 0 || line_height_ <= 0) {
-        return;
+    // Listening, speaking, and thinking are already on the status bar.
+    // Do not create a second label with the same string.
+    if (activity_label_ != nullptr) {
+        lv_obj_add_flag(activity_label_, LV_OBJ_FLAG_HIDDEN);
     }
-    passport_rect_t line;
-    if (!passport_activity_line(&safe_rect_, &subtitle_rect_, line_height_, top_reserve_, &line) ||
-        !passport_rect_inside_glass(&line, width_, height_, PASSPORT_SCREEN_RADIUS)) {
-        if (activity_label_ != nullptr) {
-            lv_obj_add_flag(activity_label_, LV_OBJ_FLAG_HIDDEN);
-        }
-        ESP_LOGW(TAG, "Activity line does not fit between the status row and the subtitle");
-        return;
-    }
-    if (activity_label_ == nullptr) {
-        activity_label_ = lv_label_create(lv_screen_active());
-        lv_obj_set_style_text_align(activity_label_, LV_TEXT_ALIGN_CENTER, 0);
-        lv_label_set_long_mode(activity_label_, LV_LABEL_LONG_CLIP);
-    }
-    lv_obj_set_pos(activity_label_, line.x, line.y);
-    lv_obj_set_size(activity_label_, line.width, line.height);
-    auto* theme = static_cast<LvglTheme*>(current_theme_);
-    if (theme != nullptr) {
-        lv_obj_set_style_text_color(activity_label_, theme->text_color(), 0);
-    }
-    ESP_LOGI(TAG, "Activity line %ldx%ld at (%ld,%ld)", static_cast<long>(line.width),
-             static_cast<long>(line.height), static_cast<long>(line.x), static_cast<long>(line.y));
-    ShowActivityLabelLocked();
 }
 
 void PassportDisplay::ShowActivityLabelLocked() {
@@ -422,9 +425,8 @@ void PassportDisplay::ShowActivityLabelLocked() {
         case PassportActivity::kNone:
             break;
     }
-    // The settings list covers this line. Hide it so a paused subtitle page
-    // is not joined by a state chip at the edge of the list.
-    if (text == nullptr || page_ != Page::kClosed) {
+    // The status bar already shows these words. A chip here repeated 聆听中.
+    if (text == nullptr || page_ != Page::kClosed || PassportActivityDuplicatesStatus(activity_)) {
         lv_obj_add_flag(activity_label_, LV_OBJ_FLAG_HIDDEN);
         return;
     }
