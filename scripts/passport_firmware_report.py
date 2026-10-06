@@ -483,6 +483,10 @@ def evaluate_gates(measured: dict, baseline: dict) -> tuple[list[str], list[str]
         limit = baseline.get(limit_field)
         if current is None and reference is None:
             continue
+        if field == "iram_used_bytes" and reference is None:
+            # ESP32-C3 does not report IRAM. A null baseline means that gate stays off
+            # even if a later size table includes the row.
+            continue
         if current is None:
             warnings.append(f"{label} was not reported, so its growth gate was not applied")
             continue

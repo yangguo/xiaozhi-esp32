@@ -143,10 +143,61 @@ class PassportSizeParseTests(unittest.TestCase):
         failures, _warnings = report.evaluate_gates(measured, {"known": False})
         self.assertTrue(any("IRAM remain" in failure for failure in failures))
 
-    def test_checked_in_baseline_is_unknown(self):
+    def test_checked_in_baseline_matches_the_green_c3_image(self):
         baseline = report.load_baseline(report.DEFAULT_BASELINE)
-        self.assertFalse(baseline["known"])
-        self.assertIsNone(baseline["dram_used_bytes"])
+        self.assertTrue(baseline["known"])
+        self.assertEqual(baseline["dram_used_bytes"], 109716)
+        self.assertIsNone(baseline["iram_used_bytes"])
+        self.assertEqual(baseline["flash_used_bytes"], 1617508 + 667552)
+        self.assertEqual(baseline["firmware_bytes"], 2365328)
+        self.assertEqual(baseline["max_dram_increase_bytes"], 8192)
+        self.assertEqual(baseline["max_iram_increase_bytes"], 2048)
+        self.assertEqual(baseline["max_flash_increase_bytes"], 65536)
+        self.assertEqual(baseline["max_firmware_increase_bytes"], 65536)
+
+        measured = {
+            "dram_used_bytes": 109716,
+            "dram_remain_bytes": 211580,
+            "iram_used_bytes": None,
+            "iram_remain_bytes": None,
+            "flash_used_bytes": 2285060,
+            "flash_code_bytes": 1617508,
+            "flash_data_bytes": 667552,
+            "firmware_bytes": 2365328,
+            "assets_bytes": 1324917,
+            "image_size_bytes": 2364912,
+        }
+        failures, warnings = report.evaluate_gates(measured, baseline)
+        self.assertEqual(failures, [])
+        self.assertFalse(any("growth gate is not enforced" in warning for warning in warnings))
+        self.assertFalse(any("IRAM" in warning for warning in warnings))
+
+        text = report._format_report(measured, failures, warnings)
+        self.assertIn("PASSPORT_IRAM_USAGE_BYTES=n/a", text)
+        self.assertIn("Result: PASS", text)
+
+    def test_checked_in_baseline_allows_exact_growth_limits(self):
+        baseline = report.load_baseline(report.DEFAULT_BASELINE)
+        measured = {
+            "dram_used_bytes": baseline["dram_used_bytes"] + baseline["max_dram_increase_bytes"],
+            "dram_remain_bytes": 211580,
+            "iram_used_bytes": 50000,
+            "iram_remain_bytes": 20000,
+            "flash_used_bytes": baseline["flash_used_bytes"] + baseline["max_flash_increase_bytes"],
+            "firmware_bytes": baseline["firmware_bytes"] + baseline["max_firmware_increase_bytes"],
+            "assets_bytes": 1324917,
+        }
+        failures, _warnings = report.evaluate_gates(measured, baseline)
+        self.assertEqual(failures, [])
+
+        measured["dram_used_bytes"] += 1
+        measured["flash_used_bytes"] += 1
+        measured["firmware_bytes"] += 1
+        failures, _warnings = report.evaluate_gates(measured, baseline)
+        self.assertTrue(any(failure.startswith("DRAM grew") for failure in failures))
+        self.assertTrue(any(failure.startswith("Flash grew") for failure in failures))
+        self.assertTrue(any(failure.startswith("Firmware size grew") for failure in failures))
+        self.assertFalse(any("IRAM" in failure for failure in failures))
 
     def test_unknown_baseline_does_not_fail_a_modest_image(self):
         measured = {

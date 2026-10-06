@@ -74,13 +74,15 @@ The run summary lists two artifacts named with the commit SHA:
 | `ai-passport-incremental-<sha>` | `bootloader.bin`, `partition-table.bin`, `app.bin`, `assets.bin`, `flash_args` | Dev updates. Writes only those offsets, so the rest of the 8 MB (including any vendor-reserved gap) is left alone. |
 
 Both zips also contain `passport-size-report.txt`. DRAM remain in that report
-is the linker's static heap estimate, not a measured free-heap value. There is
-no checked-in size baseline yet, so a growth-versus-previous-build failure is
-not armed. The job still fails if the app image exceeds the `ota_0` partition
+is the linker's static heap estimate, not a measured free-heap value.
+`scripts/passport_size_baseline.json` records the first green image
+(Actions run 37334194292) and fails the job if DRAM used grows by more than
+8 KiB, or flash usage or the app image grows by more than 64 KiB. IRAM stays
+null because this ESP32-C3 summary has no IRAM row, so there is no IRAM growth
+gate. The job also fails if the app image exceeds the `ota_0` partition
 (`0x2f0000`), the assets image exceeds 2 MB, or static DRAM remain falls
-below the ceiling in `scripts/passport_firmware_report.py`. The ESP32-C3
-summary has no IRAM row, so that remain gate applies only when IRAM figures
-are present.
+below the ceiling in `scripts/passport_firmware_report.py`. The IRAM remain
+gate applies only when IRAM figures are present.
 
 From the recovery directory:
 
