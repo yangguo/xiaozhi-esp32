@@ -235,6 +235,34 @@ class PassportActivityTests(unittest.TestCase):
             subprocess.check_output([str(self.binary), "dup", "none"], text=True).strip(), "0"
         )
 
+    def test_error_alert_never_enters_thinking(self):
+        out = subprocess.check_output(
+            [str(self.binary), "resolve", "listening", "idle", "open", "error"], text=True
+        )
+        self.assertEqual(out.split()[0], "none")
+
+    def test_closed_channel_idle_clears_thinking(self):
+        out = subprocess.check_output(
+            [str(self.binary), "resolve", "listening", "idle", "closed", "ok"], text=True
+        )
+        self.assertEqual(out.split()[0], "none")
+
+    def test_abort_mid_listen_returns_to_none(self):
+        self.assertEqual(self.phase("listening", "idle"), ("thinking", 1))
+
+    def test_connecting_wakes_screen_without_activity(self):
+        self.assertEqual(self.phase("none", "connecting"), ("none", 1))
+
+    def test_thinking_clears_only_on_channel_close(self):
+        out_closed = subprocess.check_output(
+            [str(self.binary), "clear", "thinking", "idle", "closed"], text=True
+        )
+        out_open = subprocess.check_output(
+            [str(self.binary), "clear", "thinking", "idle", "open"], text=True
+        )
+        self.assertEqual(out_closed.strip(), "1")
+        self.assertEqual(out_open.strip(), "0")
+
 
 if __name__ == "__main__":
     unittest.main()
