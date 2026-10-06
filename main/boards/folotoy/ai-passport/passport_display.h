@@ -3,6 +3,7 @@
 
 #include "display/lcd_display.h"
 #include "passport_activity.h"
+#include "passport_subtitle_text.h"
 #include "screen_rounding.h"
 
 // Idle-dim backlight, in percent. The board writes this without saving it.
@@ -97,6 +98,7 @@ private:
     lv_obj_t* menu_label_ = nullptr;
     lv_obj_t* activity_label_ = nullptr;
     PassportActivity activity_ = PassportActivity::kNone;
+    PassportSubtitles subtitles_;
     lv_timer_t* subtitle_timer_ = nullptr;
     Page page_ = Page::kClosed;
     int menu_index_ = 0;

@@ -122,6 +122,15 @@ void PassportDisplay::SetChatMessage(const char* role, const char* content) {
         ShowActivityLabel();
         RestoreIdleStatus();
     }
+    // User/assistant turns render from the bounded dual buffer so the STT
+    // line survives every assistant sentence until the next valid STT.
+    // Empty input and other roles fall through to the base behavior.
+    if (PassportSubtitleUpdate(subtitles_, role, content)) {
+        const char* prefix = UiInChinese() ? "我：" : "I: ";
+        LcdDisplay::SetChatMessage(role, PassportSubtitleRender(subtitles_, prefix).c_str());
+        RefreshSubtitlePages();
+        return;
+    }
     LcdDisplay::SetChatMessage(role, content);
     RefreshSubtitlePages();
 }
