@@ -1118,6 +1118,12 @@ void Application::StartNotification(std::string audio_url, std::vector<NotifySub
         return;
     }
 
+    // STATE_CHANGED is handled on the next main-loop turn. Close overlays that
+    // listen on Led::OnStateChanged before the popup, or the Passport settings
+    // list stays up for the first moment of audio. The later event handler
+    // calls OnStateChanged again; notifying LED updates are idempotent.
+    board.GetLed()->OnStateChanged();
+
     audio_service_.ResetDecoder();
     uint32_t playback_id = ++notification_playback_id_;
     if (playback_id == 0) {

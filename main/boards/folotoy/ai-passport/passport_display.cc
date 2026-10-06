@@ -13,11 +13,6 @@
 
 #define TAG "PassportDisp"
 
-// Matches AiPassportBoard::kDimBrightness. The dim stage writes this level
-// without the permanent flag, so a live backlight reading of 10% is not the
-// user's brightness unless display/brightness is also 10.
-static constexpr int kTemporaryDimBrightness = 10;
-
 namespace {
 
 bool UiInChinese() { return Lang::CODE[0] == 'z' && Lang::CODE[1] == 'h'; }
@@ -197,11 +192,11 @@ void PassportDisplay::LoadBrightness() {
     }
     const int live = backlight->brightness();
     // MCP writes display/brightness, then the backlight fades toward it. The
-    // 60 s dim forces kTemporaryDimBrightness and soft sleep forces 0, neither
-    // of which is stored. While the live level is one of those, or still
-    // fading, the next ±10 step uses the saved value.
+    // 60 s dim forces kPassportDimBrightness and soft sleep forces 0,
+    // neither of which is stored. While the live level is one of those, or
+    // still fading, the next ±10 step uses the saved value.
     const bool temporary_dim =
-        live == kTemporaryDimBrightness && saved_level != kTemporaryDimBrightness;
+        live == kPassportDimBrightness && saved_level != kPassportDimBrightness;
     const bool backlight_off = live <= 0;
     const bool fading = live != saved_level;
     if (temporary_dim || backlight_off || fading) {

@@ -8,7 +8,10 @@ Board definition that lets the XiaoZhi voice assistant run on the
 What this board actually has:
 
 - **No camera.** `GetCamera()` is the base implementation.
-- **No LED.** `GetLed()` stays `NoLed`.
+- **No status LED.** Nothing is wired to a GPIO LED. `GetLed()` is not
+  `NoLed`: it returns a hook whose only job is to close the settings list
+  when the device leaves idle, including immediately before a notification
+  popup. It does not blink or drive a pin.
 - **No acoustic echo cancellation.** Device-side and server-side AEC both need the
   PSRAM audio-processor path (ESP32-S3, P4, or S31). This is an ESP32-C3 with no
   PSRAM, and the board is not on the device-AEC allow list.
@@ -142,7 +145,9 @@ existing chat screen (it does not replace that screen):
 
 While the list is open, up/down do not change the volume. They do again once it
 closes. Leaving idle closes the list: connecting, listening, speaking, and
-notify, including an empty system line and notify audio before any subtitle.
+notify. A notification closes it before the popup sound starts, not on the
+following loop turn. An empty system line still closes it, as does notify
+audio that has not yet shown a subtitle.
 A non-empty chat message also closes it while the device stays idle. Soft
 sleep and deep sleep close it too. A low-battery popup closes it so the
 warning is not drawn under the overlay. Text padding is at least the 30 px
@@ -166,8 +171,10 @@ deadline and does not disable these stages:
 | 360 s | Soft sleep | Panel Sleep In, backlight off, codec off, CPU down-clocked to 40 MHz |
 | 2160 s | Deep sleep | Entered from the soft-sleep stage; any key wakes the device through GPIO0 and restarts the application |
 
-`kDimSeconds`, `kSoftSleepSeconds`, `kDeepSleepSeconds`, `kDimBrightness` and
-`kStandbyCpuMinFreq` at the top of `ai_passport_board.cc` tune the policy. Three
+`kDimSeconds`, `kSoftSleepSeconds`, `kDeepSleepSeconds`, and `kStandbyCpuMinFreq`
+at the top of `ai_passport_board.cc` tune the policy. The dim level is
+`kPassportDimBrightness` in `passport_display.h`, shared with the settings
+list. Three
 properties of this shape are deliberate:
 
 - **The soft-sleep stage is shallow on purpose.** It draws roughly 20 mA, which

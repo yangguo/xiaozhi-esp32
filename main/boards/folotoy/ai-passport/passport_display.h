@@ -3,6 +3,11 @@
 
 #include "display/lcd_display.h"
 
+// Idle-dim backlight, in percent. The board writes this without saving it.
+// The settings list uses the same value so a live reading at this level is
+// not stored unless display/brightness is also this level.
+inline constexpr int kPassportDimBrightness = 10;
+
 // SPI LCD for the Passport glass: rounded-corner flush mask plus a small
 // settings list. The list does not own a sleep timer; idle power stays with
 // the board's PowerSaveTimer.

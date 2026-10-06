@@ -37,7 +37,7 @@ enum {
 // ============================================================================
 // Idle power policy: three stages, each counted from the last key press.
 //
-//     60 s    the backlight drops to kDimBrightness; nothing else changes
+//     60 s    the backlight drops to kPassportDimBrightness; nothing else changes
 //    360 s    screen and codec off, CPU down-clocked - the "soft sleep" stage
 //   2160 s    deep sleep, entered from the soft-sleep stage as a fallback
 //
@@ -69,7 +69,9 @@ enum {
 // hour, so a forgotten Passport does not flatten its cell overnight.
 // ============================================================================
 
-// Backlight drops to kDimBrightness this long after the last input.
+// Backlight drops to kPassportDimBrightness this long after the last input.
+// That level lives in passport_display.h so the settings list can recognize a
+// temporary dim. A backlight already at or below it is left alone.
 static constexpr int kDimSeconds = 60;
 // Screen, codec and CPU down this long after the last input.
 static constexpr int kSoftSleepSeconds = 360;
@@ -78,8 +80,6 @@ static constexpr int kDeepSleepSeconds = 2160;
 // PowerSaveTimer counts the fallback from the soft-sleep deadline rather than
 // from the last input.
 static constexpr int kDeepSleepAfterSoftSleepTicks = kDeepSleepSeconds - kSoftSleepSeconds;
-// Dim level in percent. A display already at or below it is left alone.
-static constexpr int kDimBrightness = 10;
 // Safety net for the wake-key guard. The guard itself ends when the press that
 // woke the device finishes, so this only bounds a release event that never
 // arrives, or a key that is stuck down.
@@ -218,11 +218,11 @@ private:
 
 class AiPassportBoard : public WifiBoard {
 private:
-    // Closes the settings list whenever the device leaves idle. Application
-    // calls Led::OnStateChanged on the main loop for every state change
-    // (connecting, listening, speaking, notifying), which is the board hook
-    // that does not require editing Application. An empty chat line and a
-    // notify sound before any subtitle take this path.
+    // Closes the settings list whenever the device leaves idle. There is no
+    // status LED; GetLed() exists so Application's existing OnStateChanged
+    // call can reach this board. That call also runs inside StartNotification
+    // before the popup sound, because the state event itself is handled on
+    // the next main-loop turn. An empty chat line still takes this path.
     class MenuCloseLed : public Led {
     public:
         explicit MenuCloseLed(AiPassportBoard* board) : board_(board) {}
@@ -671,10 +671,10 @@ private:
         // sleep enabled, which is deliberately not used here).
         power_save_timer_ = new PowerSaveTimer(-1, kDimSeconds, kSoftSleepSeconds);
         power_save_timer_->OnEnterSleepMode([this]() {
-            ESP_LOGI(TAG, "Idle %ds: backlight to %d%%", kDimSeconds, kDimBrightness);
+            ESP_LOGI(TAG, "Idle %ds: backlight to %d%%", kDimSeconds, kPassportDimBrightness);
             auto* backlight = GetBacklight();
-            if (backlight != nullptr && backlight->brightness() > kDimBrightness) {
-                backlight->SetBrightness(kDimBrightness);
+            if (backlight != nullptr && backlight->brightness() > kPassportDimBrightness) {
+                backlight->SetBrightness(kPassportDimBrightness);
             }
         });
         // PowerSaveTimer::WakeUp() runs on the esp_timer task because the button
