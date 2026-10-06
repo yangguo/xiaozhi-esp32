@@ -11,6 +11,7 @@
 #include <lvgl.h>
 
 #include <cstring>
+#include <ctime>
 #include <string>
 
 #define TAG "PassportDisp"
@@ -119,6 +120,7 @@ void PassportDisplay::SetChatMessage(const char* role, const char* content) {
         (content == nullptr || content[0] == '\0')) {
         activity_ = PassportActivity::kNone;
         ShowActivityLabel();
+        RestoreIdleStatus();
     }
     LcdDisplay::SetChatMessage(role, content);
     RefreshSubtitlePages();
@@ -128,6 +130,10 @@ void PassportDisplay::ClearChatMessages() {
     // The idle handler clears chat as it enters the post-listen gap. Keep the
     // user's STT line up while thinking. Other boards still clear.
     if (activity_ == PassportActivity::kThinking) {
+        // The idle handler writes STANDBY after NoteDeviceState, and the clock
+        // never replaces it when the year is still before 2025. Put THINKING
+        // back on this same turn.
+        ShowThinkingStatus();
         return;
     }
     LcdDisplay::ClearChatMessages();
@@ -316,10 +322,49 @@ void PassportDisplay::AdvanceSubtitlePageLocked() {
 
 PassportActivity PassportDisplay::NoteDeviceState(DeviceState state) {
     auto& app = Application::GetInstance();
+    const PassportActivity previous = activity_;
     activity_ =
         PassportResolveActivity(activity_, state, app.IsAudioChannelOpened(), app.HasLastError());
     ShowActivityLabel();
+    if (activity_ == PassportActivity::kThinking && previous != PassportActivity::kThinking) {
+        ShowThinkingStatus();
+    } else if (previous == PassportActivity::kThinking &&
+               activity_ != PassportActivity::kThinking && state == kDeviceStateIdle) {
+        RestoreIdleStatus();
+    }
     return activity_;
+}
+
+void PassportDisplay::ShowThinkingStatus() {
+    LvglDisplay::SetStatus(Lang::Strings::THINKING);
+    HoldOffIdleClock();
+}
+
+void PassportDisplay::RestoreIdleStatus() {
+    if (Application::GetInstance().HasLastError()) {
+        return;
+    }
+    time_t now = time(nullptr);
+    struct tm* tm_now = localtime(&now);
+    if (tm_now != nullptr && tm_now->tm_year >= 2025 - 1900) {
+        char time_str[16];
+        strftime(time_str, sizeof(time_str), "%H:%M", tm_now);
+        last_displayed_clock_min_ = tm_now->tm_hour * 60 + tm_now->tm_min;
+        LvglDisplay::SetStatus(time_str);
+        return;
+    }
+    LvglDisplay::SetStatus(Lang::Strings::STANDBY);
+}
+
+void PassportDisplay::HoldOffIdleClock() {
+    time_t now = time(nullptr);
+    struct tm* tm_now = localtime(&now);
+    if (tm_now == nullptr || tm_now->tm_year < 2025 - 1900) {
+        return;
+    }
+    // Same gate as LvglDisplay::UpdateStatusBar. A stored minute stops that
+    // path from writing HH:MM over THINKING, including the first idle tick.
+    last_displayed_clock_min_ = tm_now->tm_hour * 60 + tm_now->tm_min;
 }
 
 void PassportDisplay::ShowActivityLabel() {
@@ -393,15 +438,12 @@ void PassportDisplay::UpdateStatusBar(bool update_all) {
     if (PassportThinkingClears(activity_, app.GetDeviceState(), app.IsAudioChannelOpened())) {
         activity_ = PassportActivity::kNone;
         ShowActivityLabel();
+        RestoreIdleStatus();
+    } else if (activity_ == PassportActivity::kThinking &&
+               app.GetDeviceState() == kDeviceStateIdle) {
+        HoldOffIdleClock();
     }
-    // Replace only the idle clock write. Alert() and other SetStatus calls
-    // stay as they are; a blanket rewrite was covering error text with THINKING.
-    const int clock_before = last_displayed_clock_min_;
     LcdDisplay::UpdateStatusBar(update_all);
-    if (activity_ == PassportActivity::kThinking && app.GetDeviceState() == kDeviceStateIdle &&
-        last_displayed_clock_min_ != clock_before) {
-        LvglDisplay::SetStatus(Lang::Strings::THINKING);
-    }
     if (page_ == Page::kClosed || low_battery_popup_ == nullptr) {
         return;
     }

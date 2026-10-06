@@ -196,14 +196,17 @@ Listening, the gap after release, and speaking each draw one clipped line in
 the safe area described above. There is no `kDeviceStateThinking`. After
 `StopListening` the device is idle while the audio channel is still open;
 that gap is the thinking phase and shows the localized `THINKING` string
-(`Thinking...` in en-US, `等待中...` in zh-CN). `思` and `考` are not in
-`font_noto_sans_basic_20_4` (they are in the common assets font). `等` and
-`待` are in the linked font, so the chip renders before assets load too.
-Japanese, Korean, and Vietnamese use the same constraint. Listening shows
-`LISTENING`. Speaking and notifying show `SPEAKING`. Thinking is not shown
-when an error alert is up, or when the channel is already closed. The idle
-clock tick is the only status write replaced with `THINKING`; `Alert()`
-text is left alone. The user's last line stays on screen through that gap.
+(`Thinking...` in en-US, `等待中...` in zh-CN, `お待ちください...` in ja-JP).
+`思` and `考` are not in `font_noto_sans_basic_20_4` (they are in the common
+assets font). `等` and `待` are in the linked font, so the chip renders
+before assets load too. Japanese reuses the please-wait string because
+`待機中...` is the standby label. Korean and Vietnamese use the same font
+constraint. Listening shows `LISTENING`. Speaking and notifying show
+`SPEAKING`. Thinking is not shown when an error alert is up, or when the
+channel is already closed. Entering the gap calls `LvglDisplay::SetStatus`
+with `THINKING` immediately, including when the clock has no NTP time yet,
+and leaving the gap restores the clock or `STANDBY`. `Alert()` is not
+rewritten. The user's last line stays on screen through that gap.
 The chip hides while the settings list is open and comes back when the list
 closes, including when a low-battery popup closes it. Closing the audio
 channel while idle clears the chip immediately.

@@ -171,14 +171,22 @@ class PassportActivityTests(unittest.TestCase):
             strings = json.loads(path.read_text(encoding="utf-8"))["strings"]
             thinking = strings.get("THINKING", "")
             self.assertTrue(thinking, path.parent.name)
-            self.assertNotEqual(thinking, strings["PLEASE_WAIT"], path.parent.name)
+            self.assertNotEqual(thinking, strings["STANDBY"], path.parent.name)
             self.assertNotEqual(thinking, strings["LISTENING"], path.parent.name)
             self.assertNotEqual(thinking, strings["SPEAKING"], path.parent.name)
+            # ja-JP reuses PLEASE_WAIT: 待機中... is the standby string plus dots.
+            if path.parent.name == "ja-JP":
+                self.assertEqual(thinking, strings["PLEASE_WAIT"], path.parent.name)
+            else:
+                self.assertNotEqual(thinking, strings["PLEASE_WAIT"], path.parent.name)
         en = json.loads((locales / "en-US/language.json").read_text(encoding="utf-8"))
         zh = json.loads((locales / "zh-CN/language.json").read_text(encoding="utf-8"))
+        ja = json.loads((locales / "ja-JP/language.json").read_text(encoding="utf-8"))
         self.assertEqual(en["strings"]["THINKING"], "Thinking...")
         # 思 and 考 are not in font_noto_sans_basic_20_4. 等 and 待 are.
         self.assertEqual(zh["strings"]["THINKING"], "等待中...")
+        self.assertEqual(ja["strings"]["THINKING"], "お待ちください...")
+        self.assertNotEqual(ja["strings"]["THINKING"], ja["strings"]["STANDBY"])
 
     def test_thinking_requires_an_open_channel_and_no_error(self):
         def resolve(current, state, channel, error):

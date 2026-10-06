@@ -74,6 +74,12 @@ private:
     void PlaceActivityLabelLocked();
     void ShowActivityLabel();
     void ShowActivityLabelLocked();
+    // Status line for the post-listen gap. Uses LvglDisplay::SetStatus so
+    // Alert() and other statuses are not rewritten by an override.
+    void ShowThinkingStatus();
+    void RestoreIdleStatus();
+    // Record the current minute so the idle clock does not replace THINKING.
+    void HoldOffIdleClock();
 
     void EnsureMenu();
     void ApplyMenuTheme();
