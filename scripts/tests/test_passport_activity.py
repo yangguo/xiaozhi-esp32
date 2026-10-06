@@ -1,0 +1,141 @@
+"""Host checks for Passport conversation-phase mapping.
+
+The device has no thinking state. After manual stop the runtime is idle while
+the audio channel stays open, and that gap is what the glass calls thinking.
+"""
+
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+ACTIVITY_H = ROOT / "main/boards/folotoy/ai-passport/passport_activity.h"
+MAIN = ROOT / "main"
+
+HARNESS = r"""
+#include "passport_activity.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static bool parse_activity(const char* text, PassportActivity* out) {
+    if (strcmp(text, "none") == 0) {
+        *out = PassportActivity::kNone;
+    } else if (strcmp(text, "listening") == 0) {
+        *out = PassportActivity::kListening;
+    } else if (strcmp(text, "thinking") == 0) {
+        *out = PassportActivity::kThinking;
+    } else if (strcmp(text, "speaking") == 0) {
+        *out = PassportActivity::kSpeaking;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+static bool parse_state(const char* text, DeviceState* out) {
+    if (strcmp(text, "idle") == 0) {
+        *out = kDeviceStateIdle;
+    } else if (strcmp(text, "connecting") == 0) {
+        *out = kDeviceStateConnecting;
+    } else if (strcmp(text, "listening") == 0) {
+        *out = kDeviceStateListening;
+    } else if (strcmp(text, "speaking") == 0) {
+        *out = kDeviceStateSpeaking;
+    } else if (strcmp(text, "notifying") == 0) {
+        *out = kDeviceStateNotifying;
+    } else if (strcmp(text, "starting") == 0) {
+        *out = kDeviceStateStarting;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+static const char* activity_name(PassportActivity activity) {
+    switch (activity) {
+        case PassportActivity::kNone:
+            return "none";
+        case PassportActivity::kListening:
+            return "listening";
+        case PassportActivity::kThinking:
+            return "thinking";
+        case PassportActivity::kSpeaking:
+            return "speaking";
+    }
+    return "none";
+}
+
+int main(int argc, char** argv) {
+    if (argc != 3) {
+        fprintf(stderr, "usage: CURRENT STATE\n");
+        return 2;
+    }
+    PassportActivity current;
+    DeviceState state;
+    if (!parse_activity(argv[1], &current) || !parse_state(argv[2], &state)) {
+        fprintf(stderr, "unknown activity or state\n");
+        return 2;
+    }
+    PassportActivity next = PassportNextActivity(current, state);
+    printf("%s %d\n", activity_name(next), PassportActivityWakesScreen(next, state) ? 1 : 0);
+    return 0;
+}
+"""
+
+
+class PassportActivityTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.workdir = tempfile.TemporaryDirectory()
+        harness = Path(cls.workdir.name) / "harness.cc"
+        harness.write_text(HARNESS)
+        cls.binary = Path(cls.workdir.name) / "activity"
+        subprocess.check_call(
+            [
+                "g++",
+                "-std=c++23",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                f"-I{ACTIVITY_H.parent}",
+                f"-I{MAIN}",
+                str(harness),
+                "-o",
+                str(cls.binary),
+            ]
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.workdir.cleanup()
+
+    def phase(self, current, state):
+        name, wake = subprocess.check_output(
+            [str(self.binary), current, state], text=True
+        ).split()
+        return name, int(wake)
+
+    def test_listening_release_is_thinking_until_a_later_idle(self):
+        self.assertEqual(self.phase("none", "listening"), ("listening", 1))
+        self.assertEqual(self.phase("listening", "idle"), ("thinking", 1))
+        self.assertEqual(self.phase("thinking", "idle"), ("none", 0))
+        self.assertEqual(self.phase("thinking", "speaking"), ("speaking", 1))
+        self.assertEqual(self.phase("speaking", "idle"), ("none", 0))
+
+    def test_other_states_do_not_invent_a_phase(self):
+        self.assertEqual(self.phase("none", "connecting"), ("none", 1))
+        self.assertEqual(self.phase("none", "idle"), ("none", 0))
+        self.assertEqual(self.phase("none", "starting"), ("none", 0))
+        self.assertEqual(self.phase("listening", "speaking"), ("speaking", 1))
+        self.assertEqual(self.phase("none", "notifying"), ("speaking", 1))
+        self.assertEqual(self.phase("speaking", "listening"), ("listening", 1))
+        # A later idle after thinking already cleared stays clear.
+        self.assertEqual(self.phase("none", "notifying"), ("speaking", 1))
+
+
+if __name__ == "__main__":
+    unittest.main()

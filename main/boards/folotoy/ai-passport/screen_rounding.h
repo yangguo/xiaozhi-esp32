@@ -43,6 +43,12 @@ bool passport_subtitle_viewport(int32_t screen_width, int32_t screen_height, int
 bool passport_rect_inside_glass(const passport_rect_t* rect, int32_t screen_width,
                                 int32_t screen_height, int32_t radius);
 
+// One status line inside the safe rect, below `top_reserve` (the status bar)
+// and above the subtitle. Returns false when that line would leave the safe
+// rect or overlap the subtitle.
+bool passport_activity_line(const passport_rect_t* safe, const passport_rect_t* subtitle,
+                            int32_t line_height, int32_t top_reserve, passport_rect_t* out);
+
 // How many viewport-sized pages a wrapped block needs. At least 1.
 int32_t passport_subtitle_page_count(int32_t content_height, int32_t viewport_height);
 

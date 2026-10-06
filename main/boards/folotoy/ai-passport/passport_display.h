@@ -2,6 +2,7 @@
 #define PASSPORT_DISPLAY_H_
 
 #include "display/lcd_display.h"
+#include "passport_activity.h"
 #include "screen_rounding.h"
 
 // Idle-dim backlight, in percent. The board writes this without saving it.
@@ -37,9 +38,16 @@ public:
 
     void SetupUI() override;
     void SetTheme(Theme* theme) override;
+    void SetStatus(const char* status) override;
     void SetChatMessage(const char* role, const char* content) override;
     void ClearChatMessages() override;
     void UpdateStatusBar(bool update_all = false) override;
+
+    // Device-state hook used by the board. Returns the activity now shown.
+    // Thinking is dropped when the device is already allowed to sleep, so a
+    // cancelled listen does not sit on "please wait".
+    PassportActivity NoteDeviceState(DeviceState state);
+    PassportActivity activity() const { return activity_; }
 
     bool IsMenuOpen() const;
     void OpenMenu();
@@ -64,6 +72,9 @@ private:
     void RefreshSubtitlePagesLocked();
     void AdvanceSubtitlePageLocked();
     static void SubtitleTimerCb(lv_timer_t* timer);
+    void PlaceActivityLabelLocked();
+    void ShowActivityLabel();
+    void ShowActivityLabelLocked();
 
     void EnsureMenu();
     void ApplyMenuTheme();
@@ -78,6 +89,8 @@ private:
 
     lv_obj_t* menu_panel_ = nullptr;
     lv_obj_t* menu_label_ = nullptr;
+    lv_obj_t* activity_label_ = nullptr;
+    PassportActivity activity_ = PassportActivity::kNone;
     lv_timer_t* subtitle_timer_ = nullptr;
     Page page_ = Page::kClosed;
     int menu_index_ = 0;

@@ -173,6 +173,24 @@ bool passport_rect_inside_glass(const passport_rect_t* rect, int32_t screen_widt
     return rect->x >= x1 && rect->x + rect->width - 1 <= x2;
 }
 
+bool passport_activity_line(const passport_rect_t* safe, const passport_rect_t* subtitle,
+                            int32_t line_height, int32_t top_reserve, passport_rect_t* out) {
+    if (out == NULL || safe == NULL || subtitle == NULL || line_height <= 0 || top_reserve < 0 ||
+        safe->width <= 0 || safe->height <= 0) {
+        return false;
+    }
+    const int32_t y = safe->y + top_reserve;
+    const int32_t bottom = y + line_height;
+    if (y < safe->y || bottom > safe->y + safe->height || bottom > subtitle->y) {
+        return false;
+    }
+    out->x = safe->x;
+    out->y = y;
+    out->width = safe->width;
+    out->height = line_height;
+    return true;
+}
+
 int32_t passport_subtitle_page_count(int32_t content_height, int32_t viewport_height) {
     if (viewport_height <= 0 || content_height <= viewport_height) {
         return 1;

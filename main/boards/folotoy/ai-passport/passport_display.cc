@@ -1,5 +1,6 @@
 #include "passport_display.h"
 
+#include "application.h"
 #include "assets/lang_config.h"
 #include "board.h"
 #include "lvgl_theme.h"
@@ -227,6 +228,7 @@ void PassportDisplay::ApplyGlassSafeArea() {
              static_cast<long>(subtitle.width), static_cast<long>(subtitle.height),
              static_cast<long>(subtitle.x), static_cast<long>(subtitle.y),
              static_cast<long>(line_height));
+    PlaceActivityLabelLocked();
     RefreshSubtitlePagesLocked();
 }
 
@@ -287,7 +289,98 @@ void PassportDisplay::AdvanceSubtitlePageLocked() {
     lv_obj_scroll_to_y(bottom_bar_, offset, LV_ANIM_OFF);
 }
 
+void PassportDisplay::SetStatus(const char* status) {
+    // Idle would replace the thinking gap with the clock or "Standby".
+    if (activity_ == PassportActivity::kThinking) {
+        status = Lang::Strings::PLEASE_WAIT;
+    }
+    LvglDisplay::SetStatus(status);
+    ShowActivityLabel();
+}
+
+PassportActivity PassportDisplay::NoteDeviceState(DeviceState state) {
+    PassportActivity next = PassportNextActivity(activity_, state);
+    if (next == PassportActivity::kThinking && Application::GetInstance().CanEnterSleepMode()) {
+        next = PassportActivity::kNone;
+    }
+    activity_ = next;
+    ShowActivityLabel();
+    return activity_;
+}
+
+void PassportDisplay::ShowActivityLabel() {
+    DisplayLockGuard lock(this);
+    if (!lock) {
+        return;
+    }
+    ShowActivityLabelLocked();
+}
+
+void PassportDisplay::PlaceActivityLabelLocked() {
+    if (safe_rect_.width <= 0 || line_height_ <= 0) {
+        return;
+    }
+    passport_rect_t line;
+    if (!passport_activity_line(&safe_rect_, &subtitle_rect_, line_height_, top_reserve_, &line) ||
+        !passport_rect_inside_glass(&line, width_, height_, PASSPORT_SCREEN_RADIUS)) {
+        if (activity_label_ != nullptr) {
+            lv_obj_add_flag(activity_label_, LV_OBJ_FLAG_HIDDEN);
+        }
+        ESP_LOGW(TAG, "Activity line does not fit between the status row and the subtitle");
+        return;
+    }
+    if (activity_label_ == nullptr) {
+        activity_label_ = lv_label_create(lv_screen_active());
+        lv_obj_set_style_text_align(activity_label_, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_long_mode(activity_label_, LV_LABEL_LONG_CLIP);
+    }
+    lv_obj_set_pos(activity_label_, line.x, line.y);
+    lv_obj_set_size(activity_label_, line.width, line.height);
+    auto* theme = static_cast<LvglTheme*>(current_theme_);
+    if (theme != nullptr) {
+        lv_obj_set_style_text_color(activity_label_, theme->text_color(), 0);
+    }
+    ESP_LOGI(TAG, "Activity line %ldx%ld at (%ld,%ld)", static_cast<long>(line.width),
+             static_cast<long>(line.height), static_cast<long>(line.x), static_cast<long>(line.y));
+    ShowActivityLabelLocked();
+}
+
+void PassportDisplay::ShowActivityLabelLocked() {
+    if (activity_label_ == nullptr) {
+        return;
+    }
+    const char* text = nullptr;
+    switch (activity_) {
+        case PassportActivity::kListening:
+            text = Lang::Strings::LISTENING;
+            break;
+        case PassportActivity::kSpeaking:
+            text = Lang::Strings::SPEAKING;
+            break;
+        case PassportActivity::kThinking:
+            text = Lang::Strings::PLEASE_WAIT;
+            break;
+        case PassportActivity::kNone:
+            break;
+    }
+    // The settings list covers this line. Hide it so a paused subtitle page
+    // is not joined by a state chip at the edge of the list.
+    if (text == nullptr || page_ != Page::kClosed) {
+        lv_obj_add_flag(activity_label_, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_label_set_text(activity_label_, text);
+    lv_obj_remove_flag(activity_label_, LV_OBJ_FLAG_HIDDEN);
+}
+
 void PassportDisplay::UpdateStatusBar(bool update_all) {
+    // The channel can close without another state event. Drop "please wait"
+    // once sleep is allowed again, before the idle clock overwrites the line.
+    if (activity_ == PassportActivity::kThinking &&
+        Application::GetInstance().CanEnterSleepMode()) {
+        activity_ = PassportActivity::kNone;
+        ShowActivityLabel();
+    }
     LcdDisplay::UpdateStatusBar(update_all);
     if (page_ == Page::kClosed || low_battery_popup_ == nullptr) {
         return;
@@ -301,6 +394,7 @@ void PassportDisplay::UpdateStatusBar(bool update_all) {
     }
     HideMenuLocked();
     RefreshSubtitlePagesLocked();
+    ShowActivityLabelLocked();
     ESP_LOGI(TAG, "Settings list closed for low battery");
 }
 
@@ -471,6 +565,7 @@ void PassportDisplay::RenderMenu() {
     if (LowBatteryPopupVisible()) {
         HideMenuLocked();
         RefreshSubtitlePagesLocked();
+        ShowActivityLabelLocked();
         ESP_LOGI(TAG, "Settings list closed for low battery");
         return;
     }
@@ -481,6 +576,7 @@ void PassportDisplay::RenderMenu() {
     if (subtitle_timer_ != nullptr) {
         lv_timer_pause(subtitle_timer_);
     }
+    ShowActivityLabelLocked();
 }
 
 void PassportDisplay::OpenMenu() {
@@ -527,6 +623,7 @@ void PassportDisplay::CloseMenu() {
     HideMenuLocked();
     ESP_LOGI(TAG, "Settings list closed");
     RefreshSubtitlePagesLocked();
+    ShowActivityLabelLocked();
 }
 
 void PassportDisplay::HandleMenuAction(MenuAction action) {

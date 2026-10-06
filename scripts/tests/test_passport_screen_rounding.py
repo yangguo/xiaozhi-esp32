@@ -110,8 +110,22 @@ int main(int argc, char** argv) {
                (int)passport_subtitle_page_offset(page, content, viewport));
         return 0;
     }
+    if (argc == 9 && strcmp(argv[1], "activity") == 0) {
+        passport_rect_t safe = {(int32_t)atoi(argv[2]), (int32_t)atoi(argv[3]),
+                                (int32_t)atoi(argv[4]), (int32_t)atoi(argv[5])};
+        passport_rect_t subtitle = {safe.x, (int32_t)atoi(argv[6]), safe.width, 1};
+        passport_rect_t line;
+        if (!passport_activity_line(&safe, &subtitle, (int32_t)atoi(argv[7]),
+                                    (int32_t)atoi(argv[8]), &line)) {
+            printf("none\n");
+            return 0;
+        }
+        dump_rect(&line);
+        return 0;
+    }
     fprintf(stderr, "usage: span W H R | mask | safe W H R | subtitle W H R LINE HALF | "
-                    "inside W H R X Y W H | pages CONTENT VIEW PAGE\n");
+                    "inside W H R X Y W H | pages CONTENT VIEW PAGE | "
+                    "activity SX SY SW SH SUBY LINE RESERVE\n");
     return 2;
 }
 """
@@ -284,6 +298,25 @@ class PassportScreenRoundingTests(unittest.TestCase):
         self.assertEqual(pages(300, 104, 99), (3, 196))
         self.assertEqual(pages(300, 104, -1), (3, 0))
         self.assertEqual(pages(300, 0, 0), (1, 0))
+
+    def test_activity_line_sits_between_status_and_subtitle(self):
+        # Safe (0, 30, 240, 260), subtitle top y=186, 26 px line, 28 px status row.
+        # y = 30 + 28 = 58, and 58 + 26 stays above the subtitle.
+        self.assertEqual(
+            self._rect("activity", "0", "30", "240", "260", "186", "26", "28"),
+            (0, 58, 240, 26),
+        )
+        # Touching the subtitle top is still inside the gap.
+        self.assertEqual(
+            self._rect("activity", "0", "30", "240", "260", "84", "26", "28"),
+            (0, 58, 240, 26),
+        )
+        # One pixel of overlap with the subtitle is rejected.
+        self.assertIsNone(self._rect("activity", "0", "30", "240", "260", "83", "26", "28"))
+        # A line that runs past the safe rect is rejected.
+        self.assertIsNone(self._rect("activity", "0", "30", "240", "260", "186", "26", "250"))
+        self.assertIsNone(self._rect("activity", "0", "30", "240", "260", "186", "0", "28"))
+        self.assertIsNone(self._rect("activity", "0", "30", "240", "260", "186", "26", "-1"))
 
 
 if __name__ == "__main__":
