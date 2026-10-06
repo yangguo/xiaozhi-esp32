@@ -24,7 +24,7 @@
         "CONNECTED_TO": "Đã kết nối đến ",
         "LISTENING": "Đang lắng nghe...",
         "SPEAKING": "Đang nói...",
-        "THINKING": "Đang suy nghĩ...",
+        "THINKING": "Đang chờ...",
         "SERVER_NOT_FOUND": "Đang tìm dịch vụ khả dụng",
         "SERVER_NOT_CONNECTED": "Không thể kết nối đến dịch vụ, vui lòng thử lại sau",
         "SERVER_TIMEOUT": "Hết thời gian chờ phản hồi",

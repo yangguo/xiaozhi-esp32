@@ -9,9 +9,12 @@ What this board actually has:
 
 - **No camera.** `GetCamera()` is the base implementation.
 - **No status LED.** Nothing is wired to a GPIO LED. `GetLed()` is not
-  `NoLed`: it returns a hook whose only job is to close the settings list
-  when the device leaves idle, including immediately before a notification
-  popup. It does not blink or drive a pin.
+  `NoLed`: it returns a hook that closes the settings list when the device
+  leaves idle (including immediately before a notification popup), finishes a
+  push-to-talk release that arrived while the device was still connecting,
+  updates the listening / thinking / speaking line, and wakes a dimmed
+  backlight for those phases and for connecting. It does not blink or drive
+  a pin.
 - **No acoustic echo cancellation.** Device-side and server-side AEC both need the
   PSRAM audio-processor path (ESP32-S3, P4, or S31). This is an ESP32-C3 with no
   PSRAM, and the board is not on the device-AEC allow list.
@@ -161,19 +164,29 @@ button. XiaoZhi reads the ladder as three independent ADC buttons (the same
 pattern as the ESP-BOX-Lite).
 
 - **OK short click** — toggle the chat state, enter Wi-Fi config while
-  starting, or toggle the speaker test on the Wi-Fi screen. The click that
-  ends a push-to-talk hold is ignored, so it does not close the channel that
-  hold just opened.
-- **OK hold** — push-to-talk. After 300 ms (`kPttArmMs`) the board calls
+  starting, or toggle the speaker test on the Wi-Fi screen. A slow tap under
+  one second is still this click. The click is ignored only after
+  push-to-talk has actually called `StartListening()`. If that start bails
+  (settings open, already listening, connecting, or no Wi-Fi), the click
+  still runs.
+- **OK hold** — push-to-talk, and only when the press begins in idle or
+  speaking. After 1 s (`kPassportPttArmMs`) the board calls
   `Application::StartListening()` in manual-stop mode, the same API other
-  boards use for a held key. Releasing the key calls `StopListening()`. A hold
-  longer than the 2 s long-press threshold keeps the microphone open: that
-  long press does not cancel the utterance and does not open settings. The
-  press that wakes the device out of soft or deep sleep is still dropped by
-  the wake-key guard, so it does not start listening.
+  boards use for a held key. Releasing that hold calls `StopListening()`. A
+  press that begins while already listening does not arm and does not call
+  `StopListening()` on release, so it cannot cut off an auto-mode session a
+  click already started; the click itself still toggles chat. A hold longer
+  than the 2 s long-press threshold keeps the microphone open: that long
+  press does not cancel the utterance and does not open settings. The button
+  component does not also emit a click for that hold, so the board clears the
+  click-suppress bit when the long press is recognized and the next short tap
+  still toggles chat. The press
+  that wakes the device out of soft or deep sleep is still dropped by the
+  wake-key guard, so it does not start listening.
 - **OK double-click** — while idle and allowed to sleep, open the settings
-  list. The same double-click, or a 2 s hold, closes the list. A double-click
-  during push-to-talk does not open it.
+  list. The same double-click, or a 2 s hold while no push-to-talk gesture
+  is in progress, closes the list. A double-click during push-to-talk does
+  not open it.
 - **UP** — single click: volume +10; long press: max volume
 - **DOWN** — single click: volume -10; long press: mute
 
@@ -183,12 +196,17 @@ Listening, the gap after release, and speaking each draw one clipped line in
 the safe area described above. There is no `kDeviceStateThinking`. After
 `StopListening` the device is idle while the audio channel is still open;
 that gap is the thinking phase and shows the localized `THINKING` string
-(`Thinking...` in en-US, `思考中...` in zh-CN, and the same key in every
-other locale). Listening shows `LISTENING`. Speaking and notifying show
-`SPEAKING`. The same `THINKING` text replaces the idle clock on the status
-line for that gap, so the clock does not cover it. The chip hides while the
-settings list is open and comes back when the list closes, including when a
-low-battery popup closes it.
+(`Thinking...` in en-US, `等待中...` in zh-CN). `思` and `考` are not in
+`font_noto_sans_basic_20_4` (they are in the common assets font). `等` and
+`待` are in the linked font, so the chip renders before assets load too.
+Japanese, Korean, and Vietnamese use the same constraint. Listening shows
+`LISTENING`. Speaking and notifying show `SPEAKING`. Thinking is not shown
+when an error alert is up, or when the channel is already closed. The idle
+clock tick is the only status write replaced with `THINKING`; `Alert()`
+text is left alone. The user's last line stays on screen through that gap.
+The chip hides while the settings list is open and comes back when the list
+closes, including when a low-battery popup closes it. Closing the audio
+channel while idle clears the chip immediately.
 
 Those phases, and connecting (whose only cue is the existing "Connecting..."
 status line), call `PowerSaveTimer::WakeUp()`. That restores a dimmed

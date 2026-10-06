@@ -72,8 +72,33 @@ static const char* activity_name(PassportActivity activity) {
 }
 
 int main(int argc, char** argv) {
+    if (argc == 6 && strcmp(argv[1], "resolve") == 0) {
+        PassportActivity current;
+        DeviceState state;
+        if (!parse_activity(argv[2], &current) || !parse_state(argv[3], &state)) {
+            fprintf(stderr, "unknown activity or state\n");
+            return 2;
+        }
+        const bool channel_open = strcmp(argv[4], "open") == 0;
+        const bool has_error = strcmp(argv[5], "error") == 0;
+        PassportActivity next = PassportResolveActivity(current, state, channel_open, has_error);
+        printf("%s %d\n", activity_name(next), PassportActivityWakesScreen(next, state) ? 1 : 0);
+        return 0;
+    }
+    if (argc == 5 && strcmp(argv[1], "clear") == 0) {
+        PassportActivity current;
+        DeviceState state;
+        if (!parse_activity(argv[2], &current) || !parse_state(argv[3], &state)) {
+            fprintf(stderr, "unknown activity or state\n");
+            return 2;
+        }
+        const bool channel_open = strcmp(argv[4], "open") == 0;
+        printf("%d\n", PassportThinkingClears(current, state, channel_open) ? 1 : 0);
+        return 0;
+    }
     if (argc != 3) {
-        fprintf(stderr, "usage: CURRENT STATE\n");
+        fprintf(stderr, "usage: CURRENT STATE | resolve CURRENT STATE open|closed ok|error | "
+                        "clear CURRENT STATE open|closed\n");
         return 2;
     }
     PassportActivity current;
@@ -152,7 +177,38 @@ class PassportActivityTests(unittest.TestCase):
         en = json.loads((locales / "en-US/language.json").read_text(encoding="utf-8"))
         zh = json.loads((locales / "zh-CN/language.json").read_text(encoding="utf-8"))
         self.assertEqual(en["strings"]["THINKING"], "Thinking...")
-        self.assertEqual(zh["strings"]["THINKING"], "思考中...")
+        # 思 and 考 are not in font_noto_sans_basic_20_4. 等 and 待 are.
+        self.assertEqual(zh["strings"]["THINKING"], "等待中...")
+
+    def test_thinking_requires_an_open_channel_and_no_error(self):
+        def resolve(current, state, channel, error):
+            name, wake = subprocess.check_output(
+                [str(self.binary), "resolve", current, state, channel, error], text=True
+            ).split()
+            return name, int(wake)
+
+        self.assertEqual(resolve("listening", "idle", "open", "ok"), ("thinking", 1))
+        self.assertEqual(resolve("listening", "idle", "closed", "ok"), ("none", 0))
+        self.assertEqual(resolve("listening", "idle", "open", "error"), ("none", 0))
+        self.assertEqual(resolve("speaking", "idle", "open", "ok"), ("none", 0))
+        self.assertEqual(
+            subprocess.check_output(
+                [str(self.binary), "clear", "thinking", "idle", "closed"], text=True
+            ).strip(),
+            "1",
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                [str(self.binary), "clear", "thinking", "idle", "open"], text=True
+            ).strip(),
+            "0",
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                [str(self.binary), "clear", "listening", "idle", "closed"], text=True
+            ).strip(),
+            "0",
+        )
 
 
 if __name__ == "__main__":

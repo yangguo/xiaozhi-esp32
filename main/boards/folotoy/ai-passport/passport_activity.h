@@ -42,4 +42,26 @@ inline bool PassportActivityWakesScreen(PassportActivity activity, DeviceState s
     return state == kDeviceStateConnecting;
 }
 
+// Thinking is the idle gap after listening, and only while the audio channel
+// is still open. An error alert owns the status line, so it does not enter
+// thinking either. CanEnterSleepMode() is the wrong gate: it is also false
+// while the codec is busy, which is not what the chip means.
+inline PassportActivity PassportResolveActivity(PassportActivity current, DeviceState state,
+                                                bool channel_open, bool has_error) {
+    const PassportActivity next = PassportNextActivity(current, state);
+    if (next != PassportActivity::kThinking) {
+        return next;
+    }
+    if (current != PassportActivity::kListening || !channel_open || has_error) {
+        return PassportActivity::kNone;
+    }
+    return PassportActivity::kThinking;
+}
+
+// Channel close while already idle does not emit another state event.
+// Drop the chip at that moment instead of waiting until sleep is allowed.
+inline bool PassportThinkingClears(PassportActivity current, DeviceState state, bool channel_open) {
+    return current == PassportActivity::kThinking && state == kDeviceStateIdle && !channel_open;
+}
+
 #endif  // PASSPORT_ACTIVITY_H_

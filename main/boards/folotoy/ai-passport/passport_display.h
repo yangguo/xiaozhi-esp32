@@ -36,16 +36,15 @@ public:
                     int height, int offset_x, int offset_y, bool mirror_x, bool mirror_y,
                     bool swap_xy);
 
+    ~PassportDisplay() override;
     void SetupUI() override;
     void SetTheme(Theme* theme) override;
-    void SetStatus(const char* status) override;
     void SetChatMessage(const char* role, const char* content) override;
     void ClearChatMessages() override;
     void UpdateStatusBar(bool update_all = false) override;
 
     // Device-state hook used by the board. Returns the activity now shown.
-    // Thinking is dropped when the device is already allowed to sleep, so a
-    // cancelled listen does not sit on "thinking".
+    // Thinking requires the channel to still be open and no error alert.
     PassportActivity NoteDeviceState(DeviceState state);
     PassportActivity activity() const { return activity_; }
 

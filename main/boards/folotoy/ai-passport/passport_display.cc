@@ -10,6 +10,7 @@
 #include <esp_log.h>
 #include <lvgl.h>
 
+#include <cstring>
 #include <string>
 
 #define TAG "PassportDisp"
@@ -77,6 +78,17 @@ PassportDisplay::PassportDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_pan
     ESP_LOGI(TAG, "Rounded screen mask radius=%d (outer corners black)", PASSPORT_SCREEN_RADIUS);
 }
 
+PassportDisplay::~PassportDisplay() {
+    if (subtitle_timer_ != nullptr) {
+        lv_timer_delete(subtitle_timer_);
+        subtitle_timer_ = nullptr;
+    }
+    if (activity_label_ != nullptr) {
+        lv_obj_del(activity_label_);
+        activity_label_ = nullptr;
+    }
+}
+
 void PassportDisplay::SetupUI() {
     LcdDisplay::SetupUI();
     ApplyGlassSafeArea();
@@ -93,18 +105,31 @@ void PassportDisplay::SetTheme(Theme* theme) {
 }
 
 void PassportDisplay::SetChatMessage(const char* role, const char* content) {
-    (void)role;
     // Leaving idle closes the list from the board LED hook, including an empty
     // system line and notify audio before any subtitle. A non-empty message
     // still closes it when the device stays idle (an alert does that).
     if (page_ != Page::kClosed && content != nullptr && content[0] != '\0') {
         CloseMenu();
     }
+    // Channel close schedules an empty system line and then idle. Idle is
+    // already the state, so no second state event arrives. Drop thinking here.
+    auto& app = Application::GetInstance();
+    if (PassportThinkingClears(activity_, app.GetDeviceState(), app.IsAudioChannelOpened()) &&
+        (role == nullptr || std::strcmp(role, "system") == 0) &&
+        (content == nullptr || content[0] == '\0')) {
+        activity_ = PassportActivity::kNone;
+        ShowActivityLabel();
+    }
     LcdDisplay::SetChatMessage(role, content);
     RefreshSubtitlePages();
 }
 
 void PassportDisplay::ClearChatMessages() {
+    // The idle handler clears chat as it enters the post-listen gap. Keep the
+    // user's STT line up while thinking. Other boards still clear.
+    if (activity_ == PassportActivity::kThinking) {
+        return;
+    }
     LcdDisplay::ClearChatMessages();
     RefreshSubtitlePages();
 }
@@ -289,21 +314,10 @@ void PassportDisplay::AdvanceSubtitlePageLocked() {
     lv_obj_scroll_to_y(bottom_bar_, offset, LV_ANIM_OFF);
 }
 
-void PassportDisplay::SetStatus(const char* status) {
-    // Idle would replace the thinking gap with the clock or "Standby".
-    if (activity_ == PassportActivity::kThinking) {
-        status = Lang::Strings::THINKING;
-    }
-    LvglDisplay::SetStatus(status);
-    ShowActivityLabel();
-}
-
 PassportActivity PassportDisplay::NoteDeviceState(DeviceState state) {
-    PassportActivity next = PassportNextActivity(activity_, state);
-    if (next == PassportActivity::kThinking && Application::GetInstance().CanEnterSleepMode()) {
-        next = PassportActivity::kNone;
-    }
-    activity_ = next;
+    auto& app = Application::GetInstance();
+    activity_ =
+        PassportResolveActivity(activity_, state, app.IsAudioChannelOpened(), app.HasLastError());
     ShowActivityLabel();
     return activity_;
 }
@@ -374,14 +388,20 @@ void PassportDisplay::ShowActivityLabelLocked() {
 }
 
 void PassportDisplay::UpdateStatusBar(bool update_all) {
-    // The channel can close without another state event. Drop "thinking"
-    // once sleep is allowed again, before the idle clock overwrites the line.
-    if (activity_ == PassportActivity::kThinking &&
-        Application::GetInstance().CanEnterSleepMode()) {
+    auto& app = Application::GetInstance();
+    // Backup for a channel close that did not come through an empty system line.
+    if (PassportThinkingClears(activity_, app.GetDeviceState(), app.IsAudioChannelOpened())) {
         activity_ = PassportActivity::kNone;
         ShowActivityLabel();
     }
+    // Replace only the idle clock write. Alert() and other SetStatus calls
+    // stay as they are; a blanket rewrite was covering error text with THINKING.
+    const int clock_before = last_displayed_clock_min_;
     LcdDisplay::UpdateStatusBar(update_all);
+    if (activity_ == PassportActivity::kThinking && app.GetDeviceState() == kDeviceStateIdle &&
+        last_displayed_clock_min_ != clock_before) {
+        LvglDisplay::SetStatus(Lang::Strings::THINKING);
+    }
     if (page_ == Page::kClosed || low_battery_popup_ == nullptr) {
         return;
     }

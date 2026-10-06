@@ -112,6 +112,11 @@ public:
     void WakeWordInvoke(const std::string& wake_word);
     bool UpgradeFirmware(const std::string& url, const std::string& version = "");
     bool CanEnterSleepMode();
+    // True while the protocol audio channel is up. Boards use this for the
+    // post-listen gap; it does not consult the codec.
+    bool IsAudioChannelOpened() const { return protocol_ && protocol_->IsAudioChannelOpened(); }
+    // True after OnNetworkError until the alert is dismissed.
+    bool HasLastError() const { return !last_error_message_.empty(); }
     void SendMcpMessage(const std::string& payload);
     void RegisterMcpBroadcastCallback(std::function<void(const std::string&)> callback);
     void SetAecMode(AecMode mode);

@@ -23,7 +23,7 @@
         "CONNECTED_TO": "接続完了 ",
         "LISTENING": "リスニング中...",
         "SPEAKING": "話しています...",
-        "THINKING": "考え中...",
+        "THINKING": "待機中...",
         "SERVER_NOT_FOUND": "利用可能なサーバーを探しています",
         "SERVER_NOT_CONNECTED": "サーバーに接続できません。後でもう一度お試しください",
         "SERVER_TIMEOUT": "応答待機時間が終了しました",

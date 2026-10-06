@@ -6,6 +6,7 @@
 #include "cw2017_battery_monitor.h"
 #include "passport_activity.h"
 #include "passport_display.h"
+#include "passport_ptt.h"
 #include "power_save_timer.h"
 #include "wifi_board.h"
 
@@ -24,6 +25,8 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <wifi_manager.h>
+
+#include <atomic>
 
 #define TAG "AiPassport"
 
@@ -85,11 +88,6 @@ static constexpr int kDeepSleepAfterSoftSleepTicks = kDeepSleepSeconds - kSoftSl
 // woke the device finishes, so this only bounds a release event that never
 // arrives, or a key that is stuck down.
 static constexpr int kWakeKeyGuardMs = 10000;
-// OK starts manual listening after the key has been down this long. A tap
-// releases first, so single-click (toggle chat, provisioning) and double-click
-// (settings) still run. This is well under the 2 s long-press, which must not
-// cut a sentence off.
-static constexpr int kPttArmMs = 300;
 // ESP32-C3 caps at 160 MHz.
 static constexpr int kCpuMaxFreq = 160;
 // Standby clock. DFS does not stop the tick, which is what keeps the three
@@ -240,7 +238,8 @@ private:
             }
             // Released during connect: StopListening is a no-op until the
             // device is actually listening, so finish the release here.
-            if (state == kDeviceStateListening && board_->ptt_session_ && !board_->ptt_held_) {
+            if (state == kDeviceStateListening && board_->ptt_session_ &&
+                !board_->ptt_held_.load()) {
                 app.StopListening();
             }
             if (state == kDeviceStateIdle) {
@@ -290,13 +289,13 @@ private:
     // the device would flicker into soft sleep - or fall asleep - on a key press
     // that lands in that window.
     int64_t last_key_us_ = 0;
-    // Push-to-talk. ptt_held_ is written from the button task and read from the
-    // main task; it is one byte. ptt_session_ is only touched on the main task.
+    // Push-to-talk. The held/started/suppress flags cross the button task and
+    // the main task. ptt_session_ is only touched on the main task.
     esp_timer_handle_t ptt_arm_timer_ = nullptr;
-    bool ptt_held_ = false;
-    bool ptt_started_ = false;
+    std::atomic<bool> ptt_held_{false};
+    std::atomic<bool> ptt_started_{false};
     bool ptt_session_ = false;
-    bool suppress_ok_click_ = false;
+    std::atomic<bool> suppress_ok_click_{false};
 
     // Guards the stage transitions against a key press that arrived while they
     // were queued: PowerSaveTimer has already forgiven that press, but the wake
@@ -409,20 +408,17 @@ private:
                state != kDeviceStateAudioTesting;
     }
 
-    // Provisioning, the Wi-Fi speaker test, and the open settings list keep
-    // their existing clicks. Everywhere else a hold is push-to-talk.
-    bool PttAllowed() const {
-        if (KeyEventsBlocked()) {
-            return false;
+    PassportPttPhase PttPhase() const {
+        if (ptt_started_.load()) {
+            return PassportPttPhase::kActive;
         }
-        if (display_ != nullptr && display_->IsMenuOpen()) {
-            return false;
+        if (ptt_held_.load()) {
+            return PassportPttPhase::kHolding;
         }
-        const auto state = Application::GetInstance().GetDeviceState();
-        return state != kDeviceStateStarting && state != kDeviceStateWifiConfiguring &&
-               state != kDeviceStateAudioTesting && state != kDeviceStateUpgrading &&
-               state != kDeviceStateActivating;
+        return PassportPttPhase::kIdle;
     }
+
+    bool PttMenuOpen() const { return display_ != nullptr && display_->IsMenuOpen(); }
 
     void StopPttArmTimer() {
         if (ptt_arm_timer_ != nullptr) {
@@ -431,37 +427,35 @@ private:
     }
 
     // esp_timer task. StartListening only sets an event bit, but the menu and
-    // network checks touch the display, so they run on the main task.
+    // network checks touch the display, so the decision runs on the main task.
+    // suppress_ok_click_ is set only after that decision commits a start.
     void OnPttArmFired() {
-        // The click of this hold is graded on release, on the button task.
-        // Mark it here, before that release, so ToggleChat cannot close the
-        // channel. A release that already won the race leaves the flag alone.
-        if (!ptt_held_) {
+        if (!ptt_held_.load()) {
             return;
         }
-        suppress_ok_click_ = true;
         Application::GetInstance().Schedule([this]() {
-            if (ptt_started_) {
-                return;
-            }
-            if (!PttAllowed()) {
+            if (ptt_started_.load()) {
                 return;
             }
             auto& app = Application::GetInstance();
-            if (ToggleChatNeedsNetwork() && !WifiManager::GetInstance().IsConnected()) {
-                GetDisplay()->ShowNotification(Lang::Strings::CONNECTING);
+            const bool network_up =
+                !ToggleChatNeedsNetwork() || WifiManager::GetInstance().IsConnected();
+            const PassportPttDecision decision =
+                PassportPttOnArm(PttPhase(), app.GetDeviceState(), PttMenuOpen(),
+                                 KeyEventsBlocked(), network_up, ptt_held_.load());
+            // A bail leaves suppress_ok_click_ clear, so the release is still
+            // the normal tap (toggle chat, or the connecting hint).
+            if (!decision.start_listening) {
                 return;
             }
-            ptt_started_ = true;
+            ptt_started_.store(true);
             ptt_session_ = true;
-            // Read once. StartListening only sets an event bit, and a release
-            // that lands after this still stops from OnPressUp or, if the
-            // device is still connecting, from MenuCloseLed.
-            const bool still_held = ptt_held_;
+            suppress_ok_click_.store(true);
+            const bool still_held = ptt_held_.load();
             ESP_LOGI(TAG, "Push-to-talk start");
             app.StartListening();
             if (!still_held) {
-                ptt_started_ = false;
+                ptt_started_.store(false);
                 ESP_LOGI(TAG, "Push-to-talk released during start");
                 app.StopListening();
             }
@@ -593,8 +587,7 @@ private:
         ok->OnClick([this]() {
             if (KeyEventsBlocked())
                 return;
-            if (suppress_ok_click_) {
-                suppress_ok_click_ = false;
+            if (PassportPttOnClick(suppress_ok_click_.exchange(false)).click_consumed) {
                 return;
             }
             Application::GetInstance().Schedule([this]() {
@@ -612,15 +605,15 @@ private:
                 ToggleChat();
             });
         });
-        // Double-click opens the settings list. A 2 s hold is a long
-        // push-to-talk utterance, so it no longer opens the list. The same
+        // Double-click opens the settings list. A hold past kPassportPttArmMs
+        // is push-to-talk, so it no longer opens the list. The same
         // double-click closes the list. The wake-key guard drops the press
         // that brings the device out of soft sleep.
         ok->OnDoubleClick([this]() {
             if (KeyEventsBlocked())
                 return;
             Application::GetInstance().Schedule([this]() {
-                if (ptt_held_ || ptt_started_)
+                if (PassportPttIgnoresLongPress(PttPhase()))
                     return;
                 if (ConsumeMenuKey(PassportDisplay::MenuAction::kClose))
                     return;
@@ -633,12 +626,15 @@ private:
             });
         });
         // Still closes the list. Does not open it, and does not cancel a
-        // push-to-talk hold that has already passed kPttArmMs.
+        // push-to-talk hold that has already passed kPassportPttArmMs.
         ok->OnLongPress([this]() {
+            // BUTTON_LONG_PRESS_START replaces SINGLE_CLICK for this gesture.
+            // Drop the suppress bit here or the next short tap would be eaten.
+            suppress_ok_click_.store(false);
             if (KeyEventsBlocked())
                 return;
             Application::GetInstance().Schedule([this]() {
-                if (ptt_held_ || ptt_started_)
+                if (PassportPttIgnoresLongPress(PttPhase()))
                     return;
                 if (ConsumeMenuKey(PassportDisplay::MenuAction::kClose))
                     return;
@@ -674,23 +670,23 @@ private:
             }
             WakeUpPowerSaveTimer();
             StopPttArmTimer();
-            ptt_held_ = false;
-            if (!PttAllowed()) {
+            auto& app = Application::GetInstance();
+            const PassportPttDecision decision =
+                PassportPttPressDown(app.GetDeviceState(), PttMenuOpen(), KeyEventsBlocked());
+            ptt_held_.store(decision.phase == PassportPttPhase::kHolding);
+            if (decision.phase != PassportPttPhase::kHolding || ptt_arm_timer_ == nullptr) {
                 return;
             }
-            ptt_held_ = true;
-            if (ptt_arm_timer_ != nullptr) {
-                esp_timer_start_once(ptt_arm_timer_, (int64_t)kPttArmMs * 1000);
-            }
+            esp_timer_start_once(ptt_arm_timer_, (int64_t)kPassportPttArmMs * 1000);
         });
         ok->OnPressUp([this]() {
-            const bool started = ptt_started_;
-            ptt_held_ = false;
+            const PassportPttDecision decision = PassportPttOnRelease(PttPhase());
+            ptt_held_.store(false);
+            ptt_started_.store(false);
             StopPttArmTimer();
-            if (!started) {
+            if (!decision.stop_listening) {
                 return;
             }
-            ptt_started_ = false;
             ESP_LOGI(TAG, "Push-to-talk stop");
             Application::GetInstance().StopListening();
         });
