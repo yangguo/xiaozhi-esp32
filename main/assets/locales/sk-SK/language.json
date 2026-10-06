@@ -24,6 +24,7 @@
         "CONNECTED_TO": "Pripojené k ",
         "LISTENING": "Načúvanie...",
         "SPEAKING": "Hovorenie...",
+        "THINKING": "Premýšľanie...",
         "SERVER_NOT_FOUND": "Hľadanie dostupnej služby",
         "SERVER_NOT_CONNECTED": "Nie je možné pripojiť sa k službe, skúste to neskôr",
         "SERVER_TIMEOUT": "Časový limit čakania na odpoveď vypršal",

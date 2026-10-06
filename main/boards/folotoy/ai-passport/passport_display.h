@@ -45,7 +45,7 @@ public:
 
     // Device-state hook used by the board. Returns the activity now shown.
     // Thinking is dropped when the device is already allowed to sleep, so a
-    // cancelled listen does not sit on "please wait".
+    // cancelled listen does not sit on "thinking".
     PassportActivity NoteDeviceState(DeviceState state);
     PassportActivity activity() const { return activity_; }
 

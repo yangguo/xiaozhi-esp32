@@ -24,6 +24,7 @@
         "CONNECTED_TO": "Povezano z ",
         "LISTENING": "Poslušanje...",
         "SPEAKING": "Govorjenje...",
+        "THINKING": "Razmišljanje...",
         "SERVER_NOT_FOUND": "Iskanje razpoložljive storitve",
         "SERVER_NOT_CONNECTED": "Ni se mogoče povezati s storitvijo, poskusite kasneje",
         "SERVER_TIMEOUT": "Časovna omejitev čakanja na odgovor",

@@ -24,6 +24,7 @@
         "CONNECTED_TO": "Ansluten till ",
         "LISTENING": "Lyssnar...",
         "SPEAKING": "Talar...",
+        "THINKING": "Tänker...",
         "SERVER_NOT_FOUND": "Söker efter tillgänglig tjänst",
         "SERVER_NOT_CONNECTED": "Kan inte ansluta till tjänsten, försök igen senare",
         "SERVER_TIMEOUT": "Timeout vid väntan på svar",

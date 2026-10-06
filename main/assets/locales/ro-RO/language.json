@@ -23,6 +23,7 @@
         "CONNECTED_TO": "Conectat la ",
         "LISTENING": "Se ascultă...",
         "SPEAKING": "Se vorbește...",
+        "THINKING": "Se gândește...",
         "SERVER_NOT_FOUND": "Se caută serviciul disponibil",
         "SERVER_NOT_CONNECTED": "Nu se poate conecta la serviciu, încercați mai târziu",
         "SERVER_TIMEOUT": "Timpul de răspuns a expirat",

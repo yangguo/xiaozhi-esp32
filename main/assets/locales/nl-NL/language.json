@@ -24,6 +24,7 @@
         "CONNECTED_TO": "Verbonden met ",
         "LISTENING": "Luisteren...",
         "SPEAKING": "Spreken...",
+        "THINKING": "Nadenken...",
         "SERVER_NOT_FOUND": "Zoeken naar beschikbare service",
         "SERVER_NOT_CONNECTED": "Kan niet verbinden met service, probeer later opnieuw",
         "SERVER_TIMEOUT": "Timeout bij wachten op reactie",

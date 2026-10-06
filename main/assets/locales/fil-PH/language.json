@@ -24,6 +24,7 @@
         "CONNECTED_TO": "Nakakonekta sa ",
         "LISTENING": "Nakikinig...",
         "SPEAKING": "Nagsasalita...",
+        "THINKING": "Nag-iisip...",
         "SERVER_NOT_FOUND": "Naghahanap ng available na serbisyo",
         "SERVER_NOT_CONNECTED": "Hindi makakonekta sa serbisyo, mangyaring subukan muli mamaya",
         "SERVER_TIMEOUT": "Nag-timeout ang paghihintay ng tugon",

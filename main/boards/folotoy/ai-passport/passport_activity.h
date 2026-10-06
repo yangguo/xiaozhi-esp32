@@ -5,7 +5,8 @@
 
 // What the Passport glass says about the conversation. There is no
 // kDeviceStateThinking: after manual StopListening the device is idle while
-// the audio channel stays open, and that gap is the thinking phase.
+// the audio channel stays open, and that gap is the thinking phase. The
+// label for it is Lang::Strings::THINKING.
 enum class PassportActivity {
     kNone = 0,
     kListening,

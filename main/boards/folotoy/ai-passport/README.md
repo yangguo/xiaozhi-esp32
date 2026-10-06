@@ -180,13 +180,14 @@ pattern as the ESP-BOX-Lite).
 ### Conversation feedback
 
 Listening, the gap after release, and speaking each draw one clipped line in
-the safe area described above. There is no `kDeviceStateThinking` and no
-locale string for it. After `StopListening` the device is idle while the
-audio channel is still open; that gap shows the localized `PLEASE_WAIT`
-string. Listening shows `LISTENING`. Speaking and notifying show `SPEAKING`.
-The same `PLEASE_WAIT` text replaces the idle clock on the status line for
-that gap, so the clock does not cover it. The chip hides while the settings
-list is open and comes back when the list closes, including when a
+the safe area described above. There is no `kDeviceStateThinking`. After
+`StopListening` the device is idle while the audio channel is still open;
+that gap is the thinking phase and shows the localized `THINKING` string
+(`Thinking...` in en-US, `思考中...` in zh-CN, and the same key in every
+other locale). Listening shows `LISTENING`. Speaking and notifying show
+`SPEAKING`. The same `THINKING` text replaces the idle clock on the status
+line for that gap, so the clock does not cover it. The chip hides while the
+settings list is open and comes back when the list closes, including when a
 low-battery popup closes it.
 
 Those phases, and connecting (whose only cue is the existing "Connecting..."
@@ -224,7 +225,7 @@ leaving the list up still dims at 60 s and soft-sleeps at 360 s. A separate
 "screen off after 3 minutes, but keep listening" timer is intentionally not
 added: it would race this policy, and it would blank the panel during
 listening, which `CanEnterSleepMode()` does not allow. Wake word stays off.
-Listening, the post-release "please wait" gap, speaking, and connecting call
+Listening, the post-release thinking gap, speaking, and connecting call
 `WakeUp()` so a panel that already dimmed lights up again. Once the dim stage
 has started, `PowerSaveTimer` does not leave it just because sleep is no
 longer allowed; `WakeUp()` is what restores the backlight. Soft sleep is still
@@ -426,7 +427,7 @@ external 10 kOhm pull-up. Also not verified on the device: wrapped subtitles
 staying inside the 30 px corners, paging a long TTS sentence and restarting at
 the first line of the next sentence, OK hold/release push-to-talk (including a
 hold past 2 s, a release while still connecting, and a tap that still toggles
-chat), double-click opening settings, and the listening / please-wait /
+chat), double-click opening settings, and the listening / thinking /
 speaking line next to the settings list and the dim / soft-sleep wake.
 A successful build is not hardware validation.
 

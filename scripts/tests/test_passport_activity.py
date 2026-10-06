@@ -2,8 +2,10 @@
 
 The device has no thinking state. After manual stop the runtime is idle while
 the audio channel stays open, and that gap is what the glass calls thinking.
+The label is the THINKING string in every locale, not PLEASE_WAIT.
 """
 
+import json
 import subprocess
 import tempfile
 import unittest
@@ -135,6 +137,22 @@ class PassportActivityTests(unittest.TestCase):
         self.assertEqual(self.phase("speaking", "listening"), ("listening", 1))
         # A later idle after thinking already cleared stays clear.
         self.assertEqual(self.phase("none", "notifying"), ("speaking", 1))
+
+    def test_every_locale_has_a_thinking_label(self):
+        locales = ROOT / "main/assets/locales"
+        files = sorted(locales.glob("*/language.json"))
+        self.assertGreaterEqual(len(files), 40)
+        for path in files:
+            strings = json.loads(path.read_text(encoding="utf-8"))["strings"]
+            thinking = strings.get("THINKING", "")
+            self.assertTrue(thinking, path.parent.name)
+            self.assertNotEqual(thinking, strings["PLEASE_WAIT"], path.parent.name)
+            self.assertNotEqual(thinking, strings["LISTENING"], path.parent.name)
+            self.assertNotEqual(thinking, strings["SPEAKING"], path.parent.name)
+        en = json.loads((locales / "en-US/language.json").read_text(encoding="utf-8"))
+        zh = json.loads((locales / "zh-CN/language.json").read_text(encoding="utf-8"))
+        self.assertEqual(en["strings"]["THINKING"], "Thinking...")
+        self.assertEqual(zh["strings"]["THINKING"], "思考中...")
 
 
 if __name__ == "__main__":

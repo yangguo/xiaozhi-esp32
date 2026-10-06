@@ -24,6 +24,7 @@
         "CONNECTED_TO": "已连接 ",
         "LISTENING": "聆听中...",
         "SPEAKING": "说话中...",
+        "THINKING": "思考中...",
         "SERVER_NOT_FOUND": "正在寻找可用服务",
         "SERVER_NOT_CONNECTED": "无法连接服务，请稍后再试",
         "SERVER_TIMEOUT": "等待响应超时",

@@ -292,7 +292,7 @@ void PassportDisplay::AdvanceSubtitlePageLocked() {
 void PassportDisplay::SetStatus(const char* status) {
     // Idle would replace the thinking gap with the clock or "Standby".
     if (activity_ == PassportActivity::kThinking) {
-        status = Lang::Strings::PLEASE_WAIT;
+        status = Lang::Strings::THINKING;
     }
     LvglDisplay::SetStatus(status);
     ShowActivityLabel();
@@ -358,7 +358,7 @@ void PassportDisplay::ShowActivityLabelLocked() {
             text = Lang::Strings::SPEAKING;
             break;
         case PassportActivity::kThinking:
-            text = Lang::Strings::PLEASE_WAIT;
+            text = Lang::Strings::THINKING;
             break;
         case PassportActivity::kNone:
             break;
@@ -374,7 +374,7 @@ void PassportDisplay::ShowActivityLabelLocked() {
 }
 
 void PassportDisplay::UpdateStatusBar(bool update_all) {
-    // The channel can close without another state event. Drop "please wait"
+    // The channel can close without another state event. Drop "thinking"
     // once sleep is allowed again, before the idle clock overwrites the line.
     if (activity_ == PassportActivity::kThinking &&
         Application::GetInstance().CanEnterSleepMode()) {
