@@ -21,7 +21,7 @@ bool TextGlyphStorageUsesPsram();
 template <typename T>
 class TextGlyphStorage {
     static_assert(std::is_trivially_copyable_v<T>);
-    struct alignas(std::max_align_t) Storage {
+    struct alignas(std::max(alignof(T), alignof(std::atomic<size_t>))) Storage {
         std::atomic<size_t> references{1};
         size_t count;
         explicit Storage(size_t n) : count(n) {}

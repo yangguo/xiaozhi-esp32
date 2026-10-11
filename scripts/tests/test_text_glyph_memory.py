@@ -74,7 +74,8 @@ struct lv_font_t {void(*get_glyph_dsc)()=nullptr;void(*get_glyph_bitmap)()=nullp
 ''')
             (d/'test.cc').write_text('''#include "display/lvgl_display/dynamic_glyph_cache.h"
 #include <cassert>
-bool TextGlyphStorageUsesPsram(){return false;}
+bool has_psram=false;
+bool TextGlyphStorageUsesPsram(){return has_psram;}
 int main(){
  lv_font_t base;
  for(int nth=1;nth<=4;++nth){
@@ -96,6 +97,10 @@ int main(){
  // A no-PSRAM batch cannot bypass the bitmap cap with one large glyph.
  cache.Clear();TextGlyph large;large.codepoint=2;large.box_w=256;large.box_h=512;
  assert(large.bitmap.TryResize(16384));assert(!cache.AddGlyphs({large}));
+ has_psram=true;DynamicGlyphCache retained;auto*pf=retained.EnsureFont(&base,1);
+ assert(retained.AddGlyphs({a}));assert(retained.AddGlyphs({b}));
+ auto*pd=static_cast<const lv_font_fmt_txt_dsc_t*>(pf->dsc);assert(pd->cmap_num==2);
+ retained.Clear();assert(pd->cmap_num==0);
 }
 ''')
             binary=d/'test'
