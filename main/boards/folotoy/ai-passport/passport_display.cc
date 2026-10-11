@@ -120,7 +120,10 @@ bool PassportDisplay::AddTextGlyphs(const std::vector<TextGlyph>& glyphs, uint8_
         LcdDisplay::ClearTextGlyphs();
         return false;
     }
-    return LcdDisplay::AddTextGlyphs(glyphs, bpp);
+    // An oversized batch was not retained. Do not bypass the board budget by
+    // forwarding it to the shared display cache.
+    LcdDisplay::ClearTextGlyphs();
+    return false;
 }
 
 void PassportDisplay::ClearTextGlyphs() {

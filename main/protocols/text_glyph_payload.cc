@@ -58,7 +58,7 @@ bool Parse(const cJSON* root, std::vector<TextGlyph>& result, uint8_t& bpp) {
         const size_t expected =
             (static_cast<size_t>(box_w->valueint) * box_h->valueint * parsed_bpp + 7) / 8;
         total_bitmap_bytes += expected;
-        if (total_bitmap_bytes > 64 * 1024) {
+        if (total_bitmap_bytes > (TextGlyphStorageUsesPsram() ? 64 * 1024 : 8 * 1024)) {
             ESP_LOGW(TAG, "Rejected oversized glyph payload");
             return false;
         }
@@ -70,10 +70,13 @@ bool Parse(const cJSON* root, std::vector<TextGlyph>& result, uint8_t& bpp) {
         glyph.box_h = static_cast<uint16_t>(box_h->valueint);
         glyph.ofs_x = static_cast<int16_t>(ofs_x->valueint);
         glyph.ofs_y = static_cast<int16_t>(ofs_y->valueint);
-        glyph.bitmap.resize(expected);
         const size_t encoded_length = strlen(bitmap->valuestring);
         if (encoded_length > ((expected + 2) / 3) * 4 + 4) {
             ESP_LOGW(TAG, "Rejected oversized base64 bitmap");
+            return false;
+        }
+        if (!glyph.bitmap.TryResize(expected)) {
+            ESP_LOGW(TAG, "Skipping glyph payload: bitmap storage unavailable");
             return false;
         }
         if (expected == 0) {

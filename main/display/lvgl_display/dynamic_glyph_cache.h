@@ -26,11 +26,12 @@ private:
         uint16_t box_h = 0;
         int16_t ofs_x = 0;
         int16_t ofs_y = 0;
-        TextGlyphVector<uint8_t> bitmap;
+        TextGlyphStorage<uint8_t> bitmap;
         uint64_t last_use = 0;
     };
 
-    void Rebuild();
+    bool Rebuild();
+    void ResetFontData();
     size_t BitmapBytes() const;
 
     bool initialized_ = false;
@@ -39,11 +40,12 @@ private:
     uint64_t use_counter_ = 0;
     lv_font_t font_{};
     lv_font_fmt_txt_dsc_t dsc_{};
-    TextGlyphVector<Entry> entries_;
-    TextGlyphVector<uint8_t> bitmap_blob_;
-    TextGlyphVector<uint16_t> unicode_list_;
-    TextGlyphVector<lv_font_fmt_txt_glyph_dsc_t> glyph_dsc_;
-    TextGlyphVector<lv_font_fmt_txt_cmap_t> cmaps_;
+    lv_font_fmt_txt_glyph_dsc_t empty_glyph_{};
+    std::vector<Entry> entries_;
+    TextGlyphStorage<uint8_t> bitmap_blob_;
+    TextGlyphStorage<uint16_t> unicode_list_;
+    TextGlyphStorage<lv_font_fmt_txt_glyph_dsc_t> glyph_dsc_;
+    TextGlyphStorage<lv_font_fmt_txt_cmap_t> cmaps_;
 };
 
 #endif

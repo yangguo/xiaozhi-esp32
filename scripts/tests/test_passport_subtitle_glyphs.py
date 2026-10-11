@@ -38,7 +38,8 @@ bool TextGlyphStorageUsesPsram() { return false; }
 TextGlyph glyph(uint32_t cp, size_t bytes = 4) {
     TextGlyph g;
     g.codepoint = cp; g.box_w = 8; g.box_h = bytes;
-    g.bitmap.resize(bytes, static_cast<uint8_t>(cp));
+    assert(g.bitmap.TryResize(bytes));
+    std::memset(g.bitmap.data(), static_cast<uint8_t>(cp), bytes);
     return g;
 }
 // DISPLAY_METHODS
@@ -57,6 +58,12 @@ int main(int argc, char** argv) {
         assert(display.live.size() == 2); assert(display.subtitles_.has_user);
         display.ClearTextGlyphs();
         assert(!display.subtitles_.has_user); assert(display.live.empty());
+        return 0;
+    }
+    if (op == "display_oversized") {
+        PassportDisplay display;
+        assert(!display.AddTextGlyphs({glyph(0x4e00, PassportSubtitleGlyphs::kMaxBitmapBytes + 1)}, 1));
+        assert(display.live.empty());
         return 0;
     }
     if (op == "display_empty") {
@@ -127,7 +134,7 @@ class PassportSubtitleGlyphTests(unittest.TestCase):
         cls.tmp.cleanup()
 
     def test_retention_and_reset_boundaries(self):
-        for scenario in ("union", "empty", "replace", "format", "overflow", "oversized", "count", "clear", "display_union", "display_empty"):
+        for scenario in ("union", "empty", "replace", "format", "overflow", "oversized", "count", "clear", "display_union", "display_empty", "display_oversized"):
             with self.subTest(scenario=scenario):
                 subprocess.check_call([str(self.binary), scenario])
 
