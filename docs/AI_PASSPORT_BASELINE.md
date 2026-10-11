@@ -1,5 +1,7 @@
 # AI Passport Baseline (M0 lightweight)
 
+> Historical measurements from 2026-10-06, not acceptance evidence for later upstream merges or enhanced firmware. UTF-8 subtitle budgets are validated against the production C++ helper in PR #5; this baseline PR does not implement subtitle truncation.
+
 > Local IDF is unavailable (`idf.py` not installed); build/size rows below come from CI workflow `Build AI Passport` until a local IDF 6.1 run exists.
 
 - Fork HEAD: `9753ba28220138eaf68b0b4ea37c7a3ad96deae1`

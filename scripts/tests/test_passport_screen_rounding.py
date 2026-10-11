@@ -345,21 +345,6 @@ class PassportScreenRoundingTests(unittest.TestCase):
         self.assertIsNone(self._rect("activity", "0", "30", "240", "260", "186", "0", "28"))
         self.assertIsNone(self._rect("activity", "0", "30", "240", "260", "186", "26", "-1"))
 
-    def test_utf8_safe_truncation_limits(self):
-        cases = [
-            ("ascii exactly 512", "a" * 512, 512),
-            ("ascii over 512", "a" * 600, 512),
-            ("cjk 170 chars is 510 bytes", "中" * 170, 510),
-            ("cjk over budget cuts on char edge", "中" * 200, 512),
-            ("emoji survives cut", ("🎧" * 128) + "tail", 512),
-            ("assistant 2048 cap", "b" * 3000, 2048),
-        ]
-        for name, text, limit in cases:
-            with self.subTest(name=name):
-                raw = text.encode("utf-8")[:limit]
-                cut = raw.decode("utf-8", errors="ignore")
-                self.assertLessEqual(len(cut.encode("utf-8")), limit)
-                self.assertNotIn("�", cut)
 
 
 if __name__ == "__main__":
