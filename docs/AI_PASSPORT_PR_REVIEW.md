@@ -2,9 +2,9 @@
 
 ## Integration order and gates
 
-1. Review and integrate PR #4 (`p0-closeout`) first: tests and historical baseline only.
-2. PR #5 (`passport/subtitles`) includes PR #4's fixes and measured baseline through a normal merge. After #4 merges, synchronize #5 with `main` so its remaining diff is subtitle-specific.
-3. Keep both branches and PRs until their current-head GitHub Actions build succeeds. PR #5 additionally needs physical display/audio/heap checks before merging. Do not interpret an old successful build or an empty check list as current acceptance.
+1. PR #4 (`p0-closeout`) was merged after its current-head GitHub Actions build passed: merge commit `53f1fd86ab3702df8342195576f893b6d280d313`. Its patch changes tests and historical baseline only.
+2. PR #5 (`passport/subtitles`) has been synchronized with the merged `main`. Its remaining diff contains the subtitle implementation, regression tests and this review record.
+3. Keep PR #5 and its branch until the synchronized-head GitHub Actions build and physical display/audio/heap checks pass. Do not interpret an old successful build or an empty check list as current acceptance.
 4. Delete the remote feature branches only after integration. Preserve unrelated local documentation edits before local branch cleanup.
 
 ## PR #4: three review findings addressed
@@ -29,11 +29,20 @@ Validation: 151 host tests passed. The glyph harness compiles the production pol
 
 These host checks do not compile all ESP-IDF/LVGL integration or demonstrate physical rendering. The 8 KiB bound applies to the additional retained bitmap data, not total heap usage: protocol input, glyph descriptors, shared cache entries and its rebuilt font also consume memory.
 
-## GitHub Actions blocker
+## GitHub Actions restored and build evidence
 
-GitHub rejects workflow dispatch with HTTP 422, `Actions has been disabled for this repository`. The Actions page says workflows on this fork are paused due to the scale of GitHub Actions usage. Workflow state and repository permissions report enabled, but enabling them through their API did not restore execution.
+On October 11, Actions were restored through the signed-in repository Actions page's **I understand my workflows, go ahead and re-enable them** button. The page confirmed **Actions Enabled**; workflow dispatch then succeeded. The repository/workflow permissions APIs alone had not lifted the fork suspension.
 
-A maintainer must re-enable workflows on the repository's Actions page, then run **Build AI Passport** on `p0-closeout` and `passport/subtitles`. Use GitHub Actions only for firmware builds; no local Docker build is required or accepted as a substitute.
+- PR #4 head `190efe63f4cb308f38f0c802671a6710275410d5`: [run 38107985183](https://github.com/yangguo/xiaozhi-esp32/actions/runs/38107985183) passed host tests, ESP-IDF 6.1 firmware build, firmware size gate and artifact upload. App size: 2,370,784 B; app partition: 3,080,192 B; remaining: 709,408 B. Static DRAM usage: 109,716 B; the linker estimate is not live free heap.
+- PR #5 head `e7850d6a305727d150fa0bd20c2c1792ba804679`: [run 38107987874](https://github.com/yangguo/xiaozhi-esp32/actions/runs/38107987874) passed the same gates. The subsequent main merge did not change its source tree. The final synchronized/documented head still needs its own CI result.
+
+Use GitHub Actions only for firmware builds; no local Docker build was performed.
+
+## Physical acceptance status
+
+No Passport USB device was detected on this host. The visible `/dev/cu.usbmodem2020_12_222` identifies as LDR2001 (VID 0x2d79 / PID 0x0003), so it is excluded from Passport testing. An earlier candidate connection attempt produced no ESP32 data and created no flash backup. No flash write was attempted.
+
+Connect and wake the Passport, verify its USB identity and installed firmware, then follow the checklist below. If it currently runs a chess/game app, confirm switching back to XiaoZhi before replacing that application. Hardware acceptance remains **NOT TESTED**.
 
 ## PR #5 physical acceptance checklist
 
