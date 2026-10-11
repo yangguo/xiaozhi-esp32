@@ -54,7 +54,9 @@ public:
         }
         TextGlyphStorage next;
         next.storage_ = new (memory) Storage(count);
-        std::memset(next.data(), 0, count * sizeof(T));
+        for (size_t i = 0; i < count; ++i) {
+            new (next.data() + i) T{};
+        }
         if (!empty()) {
             std::memcpy(next.data(), data(), std::min(count, size()) * sizeof(T));
         }
