@@ -191,6 +191,9 @@ void Application::Run() {
             if (GetDeviceState() == kDeviceStateNotifying) {
                 StopNotification();
             }
+            if (protocol_) {
+                protocol_->CloseAudioChannel(false);
+            }
             SetDeviceState(kDeviceStateIdle);
             Alert(Lang::Strings::ERROR, last_error_message_.c_str(), "cancel",
                   Lang::Sounds::OGG_EXCLAMATION);
@@ -273,6 +276,14 @@ void Application::Run() {
 
         if (bits & MAIN_EVENT_CLOCK_TICK) {
             clock_ticks_++;
+            const auto state = GetDeviceState();
+            if (protocol_ && (state == kDeviceStateListening || state == kDeviceStateSpeaking) &&
+                !protocol_->IsAudioChannelOpened()) {
+                // IsTimeout() previously only returned false; the stale session
+                // stayed in Listening forever without reaching error recovery.
+                last_error_message_ = Lang::Strings::SERVER_TIMEOUT;
+                xEventGroupSetBits(event_group_, MAIN_EVENT_ERROR);
+            }
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
 
@@ -708,10 +719,9 @@ void Application::InitializeProtocol() {
             if (cJSON_IsObject(payload)) {
                 CJsonStringUniquePtr payload_json(cJSON_PrintUnformatted(payload));
                 if (payload_json) {
-                    Schedule(
-                        [this, display, payload_str = std::string(payload_json.get())]() {
-                            display->SetChatMessage("system", payload_str.c_str());
-                        });
+                    Schedule([this, display, payload_str = std::string(payload_json.get())]() {
+                        display->SetChatMessage("system", payload_str.c_str());
+                    });
                 }
             } else {
                 ESP_LOGW(TAG, "Invalid custom message format: missing payload");
