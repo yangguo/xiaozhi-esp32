@@ -1,7 +1,7 @@
 """Table-driven host checks for Passport subtitle text logic.
 
 The firmware calls the same header. The user line survives assistant
-sentences until the next valid STT; empty input never clears anything.
+sentences until the next valid STT; explicit assistant clears reset answers.
 """
 
 import subprocess
@@ -106,6 +106,20 @@ class PassportSubtitleTextTests(unittest.TestCase):
         out = self.seq("user", "hello", "system", "", "render", "I: ")
         self.assertIn("updated=0", out)
         self.assertIn("rendered=<<I: hello>>", out)
+
+    def test_notification_clear_discards_old_answer_keeps_user(self):
+        out = self.seq("user", "question", "assistant", "old answer", "assistant", "",
+                       "assistant", "notification", "render", "I: ")
+        self.assertIn("rendered=<<I: question\nnotification>>", out)
+        self.assertNotIn("old answer", out)
+
+    def test_tiny_and_exact_utf8_budgets(self):
+        for text in ("abcdefg", "中中文文", "🎧🎧🎧"):
+            for limit in range(10):
+                with self.subTest(text=text, limit=limit):
+                    cut = self.truncate(text, limit)
+                    self.assertLessEqual(len(cut.encode("utf-8")), limit)
+                    self.assertNotIn("�", cut)
 
     def test_assistant_sentences_accumulate(self):
         out = self.seq("assistant", "one", "assistant", "two", "render", "I: ")

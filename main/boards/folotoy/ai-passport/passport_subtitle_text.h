@@ -27,7 +27,7 @@ inline std::string PassportTruncateUtf8(const std::string& text, size_t max_byte
     }
     static constexpr const char kEllipsis[] = "\xe2\x80\xa6";
     static constexpr size_t kEllipsisBytes = sizeof(kEllipsis) - 1;
-    size_t cut = max_bytes > kEllipsisBytes ? max_bytes - kEllipsisBytes : max_bytes;
+    size_t cut = max_bytes >= kEllipsisBytes ? max_bytes - kEllipsisBytes : max_bytes;
     while (cut > 0 && (static_cast<unsigned char>(text[cut]) & 0xC0) == 0x80) {
         --cut;
     }
@@ -38,12 +38,19 @@ inline std::string PassportTruncateUtf8(const std::string& text, size_t max_byte
     return out;
 }
 
-// Returns true when the subtitle changed. Empty content never clears: only
-// the next valid STT replaces the user line (and starts a fresh turn by
-// clearing the assistant side). Unknown roles return false for the caller
-// to pass through to the base display.
+// Empty user input preserves STT. An explicit empty assistant message clears
+// the answer (StopNotification uses this boundary), while preserving STT.
+// Unknown roles and null content pass through to the base display.
 inline bool PassportSubtitleUpdate(PassportSubtitles& subs, const char* role, const char* content) {
-    if (role == nullptr || content == nullptr || content[0] == '\0') {
+    if (role == nullptr || content == nullptr) {
+        return false;
+    }
+    if (std::strcmp(role, "assistant") == 0 && content[0] == '\0') {
+        subs.assistant.clear();
+        subs.has_assistant = false;
+        return true;
+    }
+    if (content[0] == '\0') {
         return false;
     }
     if (std::strcmp(role, "user") == 0) {
@@ -59,8 +66,8 @@ inline bool PassportSubtitleUpdate(PassportSubtitles& subs, const char* role, co
             subs.assistant = sentence;
             subs.has_assistant = true;
         } else {
-            subs.assistant =
-                PassportTruncateUtf8(subs.assistant + "\n" + sentence, kPassportSubtitleAssistantMaxBytes);
+            subs.assistant = PassportTruncateUtf8(subs.assistant + "\n" + sentence,
+                                                  kPassportSubtitleAssistantMaxBytes);
         }
         return true;
     }

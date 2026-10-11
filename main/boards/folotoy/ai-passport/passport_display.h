@@ -3,6 +3,7 @@
 
 #include "display/lcd_display.h"
 #include "passport_activity.h"
+#include "passport_subtitle_glyphs.h"
 #include "passport_subtitle_text.h"
 #include "screen_rounding.h"
 
@@ -40,6 +41,8 @@ public:
     ~PassportDisplay() override;
     void SetupUI() override;
     void SetTheme(Theme* theme) override;
+    bool AddTextGlyphs(const std::vector<TextGlyph>& glyphs, uint8_t bpp) override;
+    void ClearTextGlyphs() override;
     void SetChatMessage(const char* role, const char* content) override;
     void ClearChatMessages() override;
     void UpdateStatusBar(bool update_all = false) override;
@@ -99,6 +102,7 @@ private:
     lv_obj_t* activity_label_ = nullptr;
     PassportActivity activity_ = PassportActivity::kNone;
     PassportSubtitles subtitles_;
+    PassportSubtitleGlyphs subtitle_glyphs_;
     lv_timer_t* subtitle_timer_ = nullptr;
     Page page_ = Page::kClosed;
     int menu_index_ = 0;
