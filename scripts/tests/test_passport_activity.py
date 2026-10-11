@@ -248,7 +248,16 @@ class PassportActivityTests(unittest.TestCase):
         self.assertEqual(out.split()[0], "none")
 
     def test_abort_mid_listen_returns_to_none(self):
-        self.assertEqual(self.phase("listening", "idle"), ("thinking", 1))
+        # Aborting closes the channel. Normal manual release leaves it open
+        # and may enter Thinking, so exercise the channel-aware resolver.
+        out = subprocess.check_output(
+            [str(self.binary), "resolve", "listening", "idle", "closed", "ok"], text=True
+        )
+        self.assertEqual(out.split(), ["none", "0"])
+        clear = subprocess.check_output(
+            [str(self.binary), "clear", "thinking", "idle", "closed"], text=True
+        )
+        self.assertEqual(clear.strip(), "1")
 
     def test_connecting_wakes_screen_without_activity(self):
         self.assertEqual(self.phase("none", "connecting"), ("none", 1))

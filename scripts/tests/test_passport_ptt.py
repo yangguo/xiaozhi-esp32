@@ -203,7 +203,8 @@ class PassportPttTests(unittest.TestCase):
         parts = arm.split()
         self.assertEqual(parts[0], "idle")
         self.assertEqual(parts[1], "0")
-        click = self.run_ptt("click", "pass")
+        self.assertEqual(parts[3], "0", "offline arm must leave the next click unsuppressed")
+        click = self.run_ptt("click", "suppress" if parts[3] == "1" else "pass")
         self.assertEqual(click.split()[-1], "0")
 
     def test_long_press_ignored_while_ptt_active(self):
