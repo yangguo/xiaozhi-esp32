@@ -346,5 +346,6 @@ class PassportScreenRoundingTests(unittest.TestCase):
         self.assertIsNone(self._rect("activity", "0", "30", "240", "260", "186", "26", "-1"))
 
 
+
 if __name__ == "__main__":
     unittest.main()

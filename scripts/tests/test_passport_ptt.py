@@ -188,6 +188,29 @@ class PassportPttTests(unittest.TestCase):
             with self.subTest(args=args):
                 self.assertEqual(self.run_ptt(*args), expected)
 
+    def test_menu_open_never_arms_ptt(self):
+        out = self.run_ptt("down", "idle", "menu", "free")
+        self.assertEqual(out.split()[0], "idle")
+
+    def test_wake_blocked_press_never_arms(self):
+        out = self.run_ptt("down", "idle", "clear", "blocked")
+        self.assertEqual(out.split()[0], "idle")
+
+    def test_offline_hold_bails_without_eating_click(self):
+        down = self.run_ptt("down", "idle", "clear", "free")
+        self.assertEqual(down.split()[0], "holding")
+        arm = self.run_ptt("arm", "holding", "idle", "clear", "free", "offline", "held")
+        parts = arm.split()
+        self.assertEqual(parts[0], "idle")
+        self.assertEqual(parts[1], "0")
+        self.assertEqual(parts[3], "0", "offline arm must leave the next click unsuppressed")
+        click = self.run_ptt("click", "suppress" if parts[3] == "1" else "pass")
+        self.assertEqual(click.split()[-1], "0")
+
+    def test_long_press_ignored_while_ptt_active(self):
+        self.assertEqual(self.run_ptt("long", "active").strip(), "1")
+        self.assertEqual(self.run_ptt("long", "idle").strip(), "0")
+
 
 if __name__ == "__main__":
     unittest.main()
