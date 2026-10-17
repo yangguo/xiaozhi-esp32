@@ -50,9 +50,11 @@
 **负责范围：** 新增 `main/boards/folotoy/ai-passport/passport_ui.{h,cc}`；必要时窄改 `main/display/lcd_display.{h,cc}` 与 `main/CMakeLists.txt`；新增 `tests/passport/text_layout_test.cc`、`tests/passport/CMakeLists.txt`。
 
 - [ ] 先明确 host 测试 harness，纯逻辑与 LVGL/IDF 分离；验证 UTF-8 边界截断、空文本、长词、缺字及混合标点。
-- [ ] 核查上游多行配置和现有单缓冲，复用换行；实现安全边距、最大文字区、翻页/滚动与最近 turn 上限。
+- [ ] 实现 Idle/Listening 居中表情与 Thinking/Speaking 字幕优先双布局；后者把表情缩小移至顶部安全区，字幕从状态栏下方扩展到可用屏幕高度。
+- [ ] 将 STT 用户原话与 assistant 回答分开缓存和显示；TTS/状态切换不得清除 STT，下一条有效 STT 到达时才替换上一条；新 TTS turn 清空并更新 assistant 区。
+- [ ] 核查上游多行配置和现有单缓冲，复用换行；实现圆角安全边距、最大文字区、翻页/滚动与最近 turn 上限。用户文本上限初值 512 bytes、assistant 2 KiB，按 UTF-8 边界截断并显示省略，最终预算由实测 heap 确认。
 - [ ] 检查最终中文字体与混合文本覆盖；以单个 PTT/STT/回答闭环验证第一版 UI，再加菜单/Profile。
-- [ ] 用 20 个固定文本与真机截图核查顶栏/圆角/底部；测峰值 heap，不增加 framebuffer。
+- [ ] 用 20 个固定文本与真机截图核查 Idle/Listening 与 Thinking/Speaking 两种布局、顶栏/圆角/低电量提示、STT 跨状态保留及下一条 STT 替换；测峰值 heap，不增加 framebuffer。
 - [ ] 跑 host 测试、Passport 编译及 size gate；改共享显示则补代表性显示路径构建。
 
 **完成证据：** 用例、截图、heap/size 对比；旧布局可通过配置回退。依赖 P0-01/02。
