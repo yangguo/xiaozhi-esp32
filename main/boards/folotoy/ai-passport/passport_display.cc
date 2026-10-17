@@ -105,6 +105,34 @@ void PassportDisplay::SetTheme(Theme* theme) {
     }
 }
 
+bool PassportDisplay::AddTextGlyphs(const std::vector<TextGlyph>& glyphs, uint8_t bpp) {
+    if (subtitle_glyphs_.Update(glyphs, bpp)) {
+        subtitles_ = {};
+        ESP_LOGW(TAG, "Subtitle glyph budget/format changed; starting a fresh segment");
+    }
+    if (subtitle_glyphs_.CanReplay()) {
+        // Even an empty incoming batch must retain glyphs used by older text.
+        return LcdDisplay::AddTextGlyphs(subtitle_glyphs_.Glyphs(), subtitle_glyphs_.Bpp());
+    }
+    if (glyphs.empty()) {
+        // No dynamic font was retained; do not let the base's virtual clear
+        // discard ordinary built-in-font STT on every empty protocol batch.
+        LcdDisplay::ClearTextGlyphs();
+        return false;
+    }
+    // An oversized batch was not retained. Do not bypass the board budget by
+    // forwarding it to the shared display cache.
+    LcdDisplay::ClearTextGlyphs();
+    return false;
+}
+
+void PassportDisplay::ClearTextGlyphs() {
+    // Explicit shared-display invalidation must also invalidate board text.
+    subtitle_glyphs_.Clear();
+    subtitles_ = {};
+    LcdDisplay::ClearTextGlyphs();
+}
+
 void PassportDisplay::SetChatMessage(const char* role, const char* content) {
     // Leaving idle closes the list from the board LED hook, including an empty
     // system line and notify audio before any subtitle. A non-empty message
@@ -121,6 +149,16 @@ void PassportDisplay::SetChatMessage(const char* role, const char* content) {
         activity_ = PassportActivity::kNone;
         ShowActivityLabel();
         RestoreIdleStatus();
+    }
+    // User/assistant turns render from the bounded dual buffer so the STT
+    // line survives every assistant sentence until the next valid STT.
+    // Empty STT and other roles fall through; explicit assistant clear resets
+    // the answer while rendering the retained STT.
+    if (PassportSubtitleUpdate(subtitles_, role, content)) {
+        const char* prefix = UiInChinese() ? "我：" : "I: ";
+        LcdDisplay::SetChatMessage(role, PassportSubtitleRender(subtitles_, prefix).c_str());
+        RefreshSubtitlePages();
+        return;
     }
     LcdDisplay::SetChatMessage(role, content);
     RefreshSubtitlePages();

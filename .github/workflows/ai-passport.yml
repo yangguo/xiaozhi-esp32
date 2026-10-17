@@ -55,3 +55,14 @@ jobs:
           name: ai-passport-incremental-${{ github.sha }}
           path: build/passport-artifacts/incremental/
           if-no-files-found: error
+
+      - name: Upload firmware debug symbols
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ai-passport-debug-${{ github.sha }}
+          path: |
+            build/*.elf
+            build/*.map
+          if-no-files-found: error
+          retention-days: 7

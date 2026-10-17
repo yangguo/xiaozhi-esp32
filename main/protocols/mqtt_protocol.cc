@@ -24,12 +24,22 @@ MqttProtocol::MqttProtocol() {
                 auto& app = Application::GetInstance();
                 if (app.GetDeviceState() == kDeviceStateIdle) {
                     ESP_LOGI(TAG, "Reconnecting to MQTT server");
-                    auto alive = protocol->alive_;  // Capture alive flag
-                    app.Schedule([protocol, alive]() {
-                        if (*alive) {
-                            protocol->StartMqttClient(false);
+                    auto alive = protocol->alive_;
+                    const uint32_t generation = protocol->mqtt_generation_.load();
+                    app.Schedule([protocol, alive, generation]() {
+                        if (!*alive || generation != protocol->mqtt_generation_.load()) {
+                            return;
+                        }
+                        if (Application::GetInstance().GetDeviceState() != kDeviceStateIdle ||
+                            !protocol->StartMqttClient(false)) {
+                            esp_timer_start_once(protocol->reconnect_timer_,
+                                                 MQTT_RECONNECT_INTERVAL_MS * 1000);
                         }
                     });
+                } else {
+                    // A one-shot timer must not lose the retry while the app is busy.
+                    esp_timer_start_once(protocol->reconnect_timer_,
+                                         MQTT_RECONNECT_INTERVAL_MS * 1000);
                 }
             },
         .arg = this,
@@ -72,6 +82,7 @@ MqttProtocol::~MqttProtocol() {
 bool MqttProtocol::Start() { return StartMqttClient(false); }
 
 bool MqttProtocol::StartMqttClient(bool report_error) {
+    const uint32_t generation = ++mqtt_generation_;
     if (mqtt_ != nullptr) {
         ESP_LOGW(TAG, "Mqtt client already started");
         mqtt_.reset();
@@ -97,16 +108,40 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
     mqtt_ = network->CreateMqtt(0);
     mqtt_->SetKeepAlive(keepalive_interval);
 
-    mqtt_->OnDisconnected([this]() {
-        if (on_disconnected_ != nullptr) {
-            on_disconnected_();
-        }
-        ESP_LOGI(TAG, "MQTT disconnected, schedule reconnect in %d seconds",
-                 MQTT_RECONNECT_INTERVAL_MS / 1000);
-        esp_timer_start_once(reconnect_timer_, MQTT_RECONNECT_INTERVAL_MS * 1000);
+    mqtt_->OnDisconnected([this, generation]() {
+        auto alive = alive_;
+        Application::GetInstance().Schedule([this, alive, generation]() {
+            if (!*alive || generation != mqtt_generation_.load()) {
+                return;
+            }
+            auto& app = Application::GetInstance();
+            const auto state = app.GetDeviceState();
+            bool had_channel;
+            {
+                std::lock_guard<std::mutex> lock(channel_mutex_);
+                had_channel = udp_ != nullptr;
+            }
+            if (had_channel) {
+                CloseAudioChannel(false);
+            }
+            if (had_channel || state == kDeviceStateConnecting || state == kDeviceStateListening ||
+                state == kDeviceStateSpeaking) {
+                SetError(Lang::Strings::SERVER_NOT_CONNECTED);
+            }
+            if (on_disconnected_ != nullptr) {
+                on_disconnected_();
+            }
+            ESP_LOGI(TAG, "MQTT disconnected, schedule reconnect in %d seconds",
+                     MQTT_RECONNECT_INTERVAL_MS / 1000);
+            esp_timer_stop(reconnect_timer_);
+            esp_timer_start_once(reconnect_timer_, MQTT_RECONNECT_INTERVAL_MS * 1000);
+        });
     });
 
-    mqtt_->OnConnected([this]() {
+    mqtt_->OnConnected([this, generation]() {
+        if (generation != mqtt_generation_.load()) {
+            return;
+        }
         if (on_connected_ != nullptr) {
             on_connected_();
         }
@@ -216,8 +251,7 @@ bool MqttProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
             return false;
         }
         if (aes_nonce_.size() != kAudioHeaderSize || packet->payload.size() > UINT16_MAX) {
-            ESP_LOGE(TAG, "Invalid AES nonce or audio payload length: %zu",
-                     packet->payload.size());
+            ESP_LOGE(TAG, "Invalid AES nonce or audio payload length: %zu", packet->payload.size());
             return false;
         }
         udp = udp_;
