@@ -2,7 +2,7 @@
 
 状态：设计草案；未实现、未构建、未经真机验证。本文是本次唯一新增文件，不授权修改固件、服务端或 CI。
 
-核查日期：2026-10-18。代码快照：本仓库 `c22fdb2`，分支 `cursor/passport-realtime-aec-design`；`folo-xz` 为 `72da544`；`xz-server` 为 `eb9dc8c`；`mqttgw` 为 `c5e3235`。下文 `本仓库:` 指 `/workspace/xz-realtime/`，其它前缀分别指用户提供的三个只读参考仓库。行号均取自此次实际读取的文件；代码事实、设计建议、估算和未证实事项分开表述。
+原核查日期：2026-10-18；新增证据核查日期：2026-10-21。代码快照：本仓库 `c22fdb2`，分支 `cursor/passport-realtime-aec-design`；`folo-xz` 为 `72da544`；`xz-server` 为 `eb9dc8c`；`mqttgw` 为 `c5e3235`。下文 `本仓库:` 指 `/workspace/xz-realtime/`，其它前缀分别指用户提供的三个只读参考仓库。新增前缀 `esp-webrtc:` 指 `/workspace/esp-webrtc/`（`espressif/esp-webrtc-solution @38b1750`），`esp-sr:` 指 `/workspace/ref/esp-sr-2.4.7/`（组件注册表 2.4.7 原包），`esp_capture:` 指 `/workspace/ref/esp_capture/`（1.1.1 原包，用户提供的 `~1.1` 解析版本；包内版本见 `esp_capture:idf_component.yml:40`）。行号均取自实际读取的文件；代码事实、设计建议、估算和未证实事项分开表述。
 
 ## 1 背景 / 目标 / 非目标
 
@@ -10,7 +10,7 @@ Passport 是 ESP32-C3、8 MB flash、无 PSRAM 的小型设备，音频为 ES831
 
 目标是在不改变其它板子行为的前提下，增加可选的“实时对话（实验）”：用户主动开始会话后，Listening 和 TTS Speaking 期间持续上传麦克风，由兼容服务器消除回声并检测插话。出厂、缺失设置和不支持的连接均保持现有非实时行为；按住 OK 1 秒说话仍可使用。持续上传不等于空闲时常开麦克风，也不等于服务器已经支持 AEC。
 
-非目标：在 C3 上移植 AFE、设备端 AEC/VAD、添加唤醒词、修改引脚/板身份/分区、扩大音频队列、承诺所有服务器兼容、把传统 ASR→LLM→TTS 自动变成端到端语音模型。本次仅交付设计，所有后续代码、测试和配置修改均属于未来实施任务。
+非目标：在 C3 上移植完整 AFE、第一阶段不做设备端 AEC/VAD、添加唤醒词、修改引脚/板身份/分区、扩大音频队列、承诺所有服务器兼容、把传统 ASR→LLM→TTS 自动变成端到端语音模型。本次仅交付设计，所有后续代码、测试和配置修改均属于未来实施任务。
 
 ## 2 现状分析与假设核实
 
@@ -28,10 +28,27 @@ Passport 是 ESP32-C3、8 MB flash、无 PSRAM 的小型设备，音频为 ES831
 
 ### 2.2 Kconfig：假设基本成立，但设备 AEC 还有板型白名单
 
-- `USE_AUDIO_PROCESSOR` 直接依赖 `(ESP32S3 || ESP32P4 || ESP32S31) && SPIRAM`，是 AFE 路径开关。证据：`本仓库:main/Kconfig.projbuild:988`、`本仓库:main/Kconfig.projbuild:991`。
+- `USE_AUDIO_PROCESSOR` 直接依赖 `(ESP32S3 || ESP32P4 || ESP32S31) && SPIRAM`，是完整 AFE 路径开关；此限制不能外推为 esp-sr 的独立 AEC/VAD/NS 算法均不支持 C3。证据：`本仓库:main/Kconfig.projbuild:988`、`本仓库:main/Kconfig.projbuild:991`。
 - `USE_SERVER_AEC` 依赖 `USE_AUDIO_PROCESSOR`，所以间接受到相同芯片/PSRAM 限制；并不是服务器 AEC 算法理论上需要设备 PSRAM。证据：`本仓库:main/Kconfig.projbuild:1011`、`本仓库:main/Kconfig.projbuild:1014`。
 - `USE_DEVICE_AEC` 同时要求 `USE_AUDIO_PROCESSOR` 和一组板型白名单，不能概括成满足芯片和 PSRAM 即可。证据：`本仓库:main/Kconfig.projbuild:997`、`本仓库:main/Kconfig.projbuild:1000`。
 - 参考官方 Passport 固件同样保留这些依赖，不能以其存在为 C3 实时 AEC 已获支持的证据：`folo-xz:main/Kconfig.projbuild:451`、`folo-xz:main/Kconfig.projbuild:454`、`folo-xz:main/Kconfig.projbuild:463`、`folo-xz:main/Kconfig.projbuild:474`、`folo-xz:main/Kconfig.projbuild:477`。该参考变体目标/flash 见 `folo-xz:main/boards/folotoy/ai-passport/config.json:4`、`folo-xz:main/boards/folotoy/ai-passport/config.json:9`，ES8311 实例见 `folo-xz:main/boards/folotoy/ai-passport/ai_passport_board.cc:229`。
+
+依赖精确锁定 `espressif/esp-sr ==2.4.7`：`本仓库:main/idf_component.yml:43`。本次实际读取原包，确认以下 C3 接口与构建证据：
+
+| 核查项 | 实际证据与结论 |
+| --- | --- |
+| 独立 AEC 生命周期与块处理 | `afe_aec_create`、`afe_aec_process`、`afe_aec_get_chunksize`、`afe_aec_destroy` 分别声明于 `esp-sr:include/esp32c3/esp_afe_aec.h:46`、`esp-sr:include/esp32c3/esp_afe_aec.h:58`、`esp-sr:include/esp32c3/esp_afe_aec.h:65`、`esp-sr:include/esp32c3/esp_afe_aec.h:75`；create 接收输入格式、整数 filter_length、afe_type_t、afe_mode_t。输入只选首个麦克风和首个播放参考通道，见同文件 `esp-sr:include/esp32c3/esp_afe_aec.h:25` 至 `esp-sr:include/esp32c3/esp_afe_aec.h:35`；chunksize 注释表示每帧采样点数，见 `esp-sr:include/esp32c3/esp_afe_aec.h:61` |
+| filter_length 注释与 C3 推荐值边界 | 同文件 `esp-sr:include/esp32c3/esp_afe_aec.h:38` 至 `esp-sr:include/esp32c3/esp_afe_aec.h:40` 只说明滤波器越长 CPU 负载越高，推荐 S3/P4 用 4、C5 用 2；**没有给出 C3 专属推荐值**，也未在此注明物理单位、合法范围。不能将 C5 的 2 写成 C3 推荐值；§7.1 的 1–2 仅为待验证试验建议 |
+| 类型与低成本模式 | `AFE_MODE_LOW_COST=0` 见 `esp-sr:include/esp32c3/esp_afe_config.h:29`；`AFE_TYPE_VC=1` 注释为语音通信、16 kHz 输入、包含非线性噪声抑制，见 `esp-sr:include/esp32c3/esp_afe_config.h:36` |
+| CMake 的 C3 目标与预编译库 | `esp-sr:CMakeLists.txt:1` 明确包含 esp32c3，`esp-sr:CMakeLists.txt:2` 将 TARGET_LIB_PATH 设为 IDF_TARGET；`esp-sr:CMakeLists.txt:57`、`esp-sr:CMakeLists.txt:58` 分别注册 libesp_audio_processor.a 和 libesp_audio_front_end.a |
+
+本次实际执行符号检查（静态库没有可引用的源码行号，`T` 表示已定义的代码符号）：
+
+```sh
+nm -A -g --defined-only /workspace/ref/esp-sr-2.4.7/lib/esp32c3/*.a | rg ' (afe_aec_|vad_|ns_)'
+```
+
+结果：`libesp_audio_front_end.a` 的 `esp_afe_aec.c.obj` 定义 `afe_aec_create/process/get_chunksize/destroy`；`libesp_audio_processor.a` 定义 `vad_create`、`vad_create_with_param`、`vad_destroy`、`vad_process`、`vad_process_with_trigger`、`vad_reset_trigger`、`vad_trigger_alloc/detect/free/reset`，以及 `ns_create`、`ns_destroy`、`ns_pro_create`、`ns_process`、`ns_free`、`ns_init`、`ns_pro`，匹配项均为 `T`。这证实 C3 原包含候选独立算法接口及库内定义，**尚未编译链接、未真机测量**；不能据此断言依赖已完整链接或实时性能可用。
 
 ### 2.3 Application：SetAecMode“从未调用”是假设错误
 
@@ -69,6 +86,29 @@ hello 的 `features.aec=true` 当前由编译宏决定，而非运行时 GetAecM
 | MQTT/UDP | MQTT 控制，UDP 音频头 16 B：type u8@0，flags u8@1，payload_len u16@2，ssrc/连接标识 u32@4，timestamp u32@8，sequence u32@12；多字节字段网络序，头用于 AES-CTR nonce，随后是加密 Opus | `本仓库:main/protocols/mqtt_protocol.cc:228`、`本仓库:main/protocols/mqtt_protocol.cc:238`、`本仓库:main/protocols/mqtt_protocol.cc:303`、`本仓库:main/protocols/mqtt_protocol.cc:317`、`本仓库:main/protocols/mqtt_protocol.cc:351` |
 
 WebSocket 版本读自 `websocket/version` 并写 Protocol-Version 请求头，不能只改 hello.version 期待自动协商：`本仓库:main/protocols/websocket_protocol.cc:79`、`本仓库:main/protocols/websocket_protocol.cc:83`、`本仓库:main/protocols/websocket_protocol.cc:104`。当前 v2/v3 下行解析直接转换头并使用声明长度，尚未先验证头长和 payload 边界：`本仓库:main/protocols/websocket_protocol.cc:108` 至 `本仓库:main/protocols/websocket_protocol.cc:138`；未来触碰该路径必须补齐输入校验，不把服务端视为可信内存来源。
+
+### 2.6 为何不采用 esp-webrtc-solution
+
+本设计保留小智协议和服务器端路线，仅借鉴音频参考路径，不整体移植 WebRTC 方案。
+
+| 核查项 | 实际证据与结论 |
+| --- | --- |
+| `esp_peer` 预编译库无 esp32c3 | 实查 `components/esp_peer/libs/` 仅有 esp32、esp32s2、esp32s3、esp32s31、esp32p4、esp32c5、esp32c6、esp32c61，未见 esp32c3；构建按 `${IDF_TARGET}` 直接引用 `libpeer_default.a`，见 `esp-webrtc:components/esp_peer/CMakeLists.txt:30`、`esp-webrtc:components/esp_peer/CMakeLists.txt:32`。目录缺项没有可引用的源码行号；本次未尝试 C3 构建 |
+| OpenAI demo 的 S3/P4 + SPIRAM 前提 | 默认板为 S3-Korvo-2：`esp-webrtc:solutions/openai_demo/README.md:19`；公共配置启用 SPIRAM：`esp-webrtc:solutions/openai_demo/sdkconfig.defaults:3`；S3/P4 配置分别设置 PSRAM：`esp-webrtc:solutions/openai_demo/sdkconfig.defaults.esp32s3:8`、`esp-webrtc:solutions/openai_demo/sdkconfig.defaults.esp32p4:5`。这些证明现成配置面向 S3/P4 + SPIRAM；“仅允许这两个目标”的硬性检查**未证实**，不把示例配置等同于库的全目标限制 |
+| `capture_audio_aec_src.c` 限定 S3/P4/S31 | 已确认 1.1.1 原包的 `esp_capture:impl/capture_audio_src/capture_audio_aec_src.c:10` 为 `#if CONFIG_IDF_TARGET_ESP32S3 \|\| CONFIG_IDF_TARGET_ESP32P4 \|\| CONFIG_IDF_TARGET_ESP32S31`，该实现受此编译限定，不含 C3；这不否定 esp-sr 的 C3 独立 AEC 接口。依赖约束 `~1.1` 见 `esp-webrtc:components/esp_webrtc/idf_component.yml:8`；demo 调用 AEC capture source 见 `esp-webrtc:solutions/openai_demo/main/media_sys.c:70`、`esp-webrtc:solutions/openai_demo/main/media_sys.c:78` |
+| WebRTC 传输不能直接替换小智协议 | `esp_peer` 使用 ICE/DTLS/SCTP/RTP/SRTP：`esp-webrtc:components/esp_peer/README.md:11` 至 `esp-webrtc:components/esp_peer/README.md:14`；demo 使用 SDP 和 Realtime HTTP 信令：`esp-webrtc:solutions/openai_demo/README.md:7`。小智使用 listen JSON 和自定义音频头：`本仓库:main/protocols/protocol.cc:82`、`本仓库:main/protocols/protocol.h:19`，另见 2.5 的 WebSocket 与 MQTT/UDP 格式。因此不能直接互通，整体采用需要另做服务端/协议适配 |
+| OpenAI demo 的插话打断在服务器端 | **仍未证实**：本次再次递归搜索整个 `solutions/openai_demo`（含隐藏及忽略文件），`turn_detection`、`server_vad`、`input_audio_buffer`、`speech_started`、`interrupt_response`、`response.cancel`、`vad`、`interrupt` 均无匹配，命令见下。实际会话更新设置 realtime、output_modalities、instructions、tool_choice 和 tools，见 `esp-webrtc:solutions/openai_demo/main/webrtc.c:285` 至 `esp-webrtc:solutions/openai_demo/main/webrtc.c:302`；信令配置只显式给出 token/model/voice，见 `esp-webrtc:solutions/openai_demo/main/webrtc.c:654` 至 `esp-webrtc:solutions/openai_demo/main/webrtc.c:658`。JSON 分发处理 error、session.updated、函数调用、response.done，见 `esp-webrtc:solutions/openai_demo/main/webrtc.c:475`、`esp-webrtc:solutions/openai_demo/main/webrtc.c:484`、`esp-webrtc:solutions/openai_demo/main/webrtc.c:491`、`esp-webrtc:solutions/openai_demo/main/webrtc.c:504`。未发现显式打断配置/事件处理，不能从缺项推断服务器默认行为；demo 自身启用了本地 AEC capture，不能作为“无需本地 AEC”的证据 |
+
+复查 demo 的实际命令（无匹配，`rg` 退出码为 1；负面搜索没有源码行号）：
+
+```sh
+rg --hidden --no-ignore -n -i 'turn_detection|server_vad|input_audio_buffer|speech_started|interrupt_response|response\.cancel|vad|interrupt' /workspace/esp-webrtc/solutions/openai_demo
+```
+
+### 2.7 许可
+
+- **esp-sr**：已实际读取 2.4.7 原包 LICENSE：标题为 ESPRESSIF MIT License（`esp-sr:LICENSE:1`），授权适用于乐鑫产品（`esp-sr:LICENSE:5` 至 `esp-sr:LICENSE:10`），要求保留版权及许可声明（`esp-sr:LICENSE:12` 至 `esp-sr:LICENSE:13`），按原样提供并免责（`esp-sr:LICENSE:15` 至 `esp-sr:LICENSE:20`）。C3 算法以预编译静态库交付的证据见 §2.2 的 CMake 与 nm 核查；此结论不等同于已证明全部实现源码的公开状态，也不构成实时性能保证。
+- **esp_capture 等多媒体组件**：本次实际读到 `av_render`、`codec_board`、`media_lib_utils` 的 LICENSE，均为 Espressif Modified MIT，限与乐鑫产品一起使用，保留版权及许可声明，并禁止面向非乐鑫产品再分发。证据分别为 `esp-webrtc:components/av_render/LICENSE:1`、`esp-webrtc:components/av_render/LICENSE:5`、`esp-webrtc:components/av_render/LICENSE:9` 至 `esp-webrtc:components/av_render/LICENSE:13`；`esp-webrtc:components/codec_board/LICENSE:1`、`esp-webrtc:components/codec_board/LICENSE:9` 至 `esp-webrtc:components/codec_board/LICENSE:13`；`esp-webrtc:components/media_lib_utils/LICENSE:1`、`esp-webrtc:components/media_lib_utils/LICENSE:9` 至 `esp-webrtc:components/media_lib_utils/LICENSE:13`。本次另行读取 `esp_capture` 1.1.1 原包 LICENSE，标题为 Espressif Modified MIT License（`esp_capture:LICENSE:1`），明确仅限乐鑫产品（`esp_capture:LICENSE:5`、`esp_capture:LICENSE:9`），须保留版权及许可声明（`esp_capture:LICENSE:10` 至 `esp_capture:LICENSE:11`），禁止为非乐鑫产品使用而再分发源代码或二进制（`esp_capture:LICENSE:12` 至 `esp_capture:LICENSE:13`）；免责条款见 `esp_capture:LICENSE:15` 至 `esp_capture:LICENSE:20`，SPDX 标识见 `esp_capture:LICENSE:22`。
 
 ## 3 目标服务器与兼容性
 
@@ -207,6 +247,8 @@ WebSocket v2 进入实验前校验 len≥16、version/type、payload_size 与剩
 
 不靠加队列掩盖 CPU 不足；优先减少 UI 刷新、复用短缓冲、减少音频路径分配并测重采样开销。若仍不能达到实时期限，保留 PTT，另行评估低复杂度编码或服务端帧长适配，不能无验证地改帧长或换 SDK。
 
+可选本地轻量 AEC 的 CPU/RAM **必须真机测量**，不沿用上述服务器端路线估算，也不从静态库大小推算运行时 RAM。对相同音量、网络和双向 Opus 负载，分别测禁用基线与启用后的 AEC 每块处理耗时 P95/P99、CPU 增量、最小内部空闲堆、最大连续块、栈余量及丢帧；包括重采样、双通道缓冲和参考对齐成本。建议放弃门限：AEC 及其配套处理持续占用单核 CPU >40%，或处理 P99 超过一个输入块时长，或最小内部空闲堆低于基线校准后预先冻结的门限（初始建议 32 KiB、最大连续块 16 KiB，见 6.3），即停止本地 AEC 试验并回退服务器端路线/PTT；不得为保留算法而放宽门限。40% 是试验预算，不是已测占用或 SDK 性能指标。
+
 ## 6 测试计划
 
 本次文档任务未运行构建/主机测试；以下均为后续实施计划。使用 ESP-IDF v6.1，最低 v6.0.1，不测试或支持 IDF 5.x。
@@ -251,8 +293,20 @@ Build Boards 覆盖代表性 C3 lite 非 Passport、S3 AFE/设备 AEC、P4、无
 - **时间戳不等于精确对齐**：FIFO、DMA 和回声尾部偏差可能超出服务端搜索范围；备选是小型有界的播放标记时间窗口，或服务端更稳健延迟估计。必须保留回传标签与本地测量时间的区别。
 - **stop 歧义**：普通结束与打断无区别，见 4.5。若无法同时通过插话延迟和尾音完整性，要求服务器增加明确打断语义；否则不给该组合启用实验功能。
 - **端到端模型**：具备原生音频双工/打断能力的模型可以减少传统链路延迟，但不必然能抵抗同机喇叭回声。需确认模型接受的音频格式、回声参考、控制事件、成本与隐私，适配现有协议；不能把切换模型当成 AEC 已解决。
-- **C3 CPU/堆/功耗**：不上 AFE、不新增大 PCM 缓存/任务；超资源门限先优化或撤回能力，不扩大队列/基线。活动实时会话持续耗电，必须有手动结束和服务器空闲关闭策略。
+- **C3 CPU/堆/功耗**：第一阶段不上完整 AFE、不新增大 PCM 缓存/任务；超资源门限先优化或撤回能力，不扩大队列/基线。活动实时会话持续耗电，必须有手动结束和服务器空闲关闭策略。
 - **兼容声明漂移**：锁定服务端、网关、模型和传输组合；换模型/版本重跑双讲验收。官方服务未证实前保持可选且不默认启用。
+
+### 7.1 备选：C3 本地轻量 AEC
+
+仅作为阶段 2a 服务器端联调、阶段 2b 回环验证之后的可选阶段 2c 试验：在 lite 路径接入独立 `afe_aec_*`，拟用 `AFE_TYPE_VC`、`AFE_MODE_LOW_COST`、`filter_length=1–2` 起步，而非启用完整 AFE。参数符号、类型及函数声明已由 §2.2 的原包行号核实；`AFE_TYPE_VC` 注释对应 16 kHz。`filter_length=1–2` 是设计试验值，原包 `esp_afe_aec.h` 没有给 C3 专属推荐值，也未注明其物理单位和合法范围，不能将 C5 推荐 2 当作 C3 依据；先最小编译链接，再以 `afe_aec_get_chunksize` 返回值组织固定缓冲，并验证采样率、麦克风/参考排列和生命周期。现有 lite 直接输出原始音频、启用设备 AEC 只报警，见 `本仓库:main/audio/engines/lite_audio_engine.cc:35`、`本仓库:main/audio/engines/lite_audio_engine.cc:70`，接入属于未来功能。
+
+优先试验 ES8311 DAC 回环到右声道的参考路径：demo 明确注释参考来自 ES8311 speaker 右声道，并设置 16 kHz、双声道、16 位播放，见 `esp-webrtc:solutions/openai_demo/main/media_sys.c:111` 至 `esp-webrtc:solutions/openai_demo/main/media_sys.c:117`。这提供参考设计线索，尚不能证明 Passport 接线及寄存器配置支持同样回环。本仓库 `input_reference_` 当前固定 false、`input_channels_=1`，见 `本仓库:main/audio/codecs/es8311_audio_codec.cc:13`、`本仓库:main/audio/codecs/es8311_audio_codec.cc:14`；codec 打开时仍是单声道，见 `本仓库:main/audio/codecs/es8311_audio_codec.cc:94` 至 `本仓库:main/audio/codecs/es8311_audio_codec.cc:101`。I2S slot 虽为双声道（`本仓库:main/audio/codecs/es8311_audio_codec.cc:141`），也不能仅翻转 `input_reference_` 就宣称参考可用；需验证真正的麦克风/右声道参考采集和立体声播放，不修改原板引脚。
+
+备选为软件参考：从实际送往播放的 PCM 取固定有界缓冲，显式对齐重采样、播放队列、I2S DMA 延迟及中断/丢帧；比硬件回环更难，不用服务器时间戳代替本地采样对齐。若 DAC 回环未通过阶段 2b，不把软件参考视为自动可用的补救。
+
+后续设计独立的 Passport/C3 Kconfig（建议 `PASSPORT_LOCAL_AEC_EXPERIMENTAL`，默认 n），不 select `USE_AUDIO_PROCESSOR`、不放宽完整 AFE 的芯片/PSRAM 或板型限制。保持独立开关及有界缓冲，避免与服务器端 AEC 未经验证地叠加；关闭时维持既有 lite 行为。本地模式是否声明服务器 aec 能力须另验协议语义。达到第 5 节任一放弃门限即撤回本地试验；通过编译、链接仍须双讲、插话、重连、资源和功耗真机验收。
+
+### 7.2 回滚
 
 回滚顺序：用户关闭菜单→调度停止采集、关通道、清所有会话音频/标记、SetAecMode(Off) 并保存 false→下一会话使用原模式。严重故障可构建禁用编译能力的同硬件固件；即使 NVS 保存 true 也必须被忽略。不改板身份或分区，不删除亮度/主题设置；退回旧固件后新键被忽略，再升级是否恢复偏好须在恢复说明中明确。保留已有恢复镜像交付路径，不在本次执行刷机或发布。
 
@@ -262,12 +316,13 @@ Build Boards 覆盖代表性 C3 lite 非 Passport、S3 AFE/设备 AEC、P4、无
 | --- | --- | --- |
 | 0：协议与字体门禁 | 确认服务器组合、网关 URL、双向头、stop/abort 策略；取得实际字体 cmap；确认用户选择 | 输出可复现抓包/参考标记路径和逐字覆盖表；未知项不能被标为已兼容；默认 PTT 无变化 |
 | 1：能力与运行时接线 | Passport Kconfig、NVS/menu、主任务切换、两传输 hello；PTT/短按规则 | 能力关/开均构建；其它板子序列化不变；首次开机关闭、主动开会话才上传；切换无竞争和旧连接状态残留 |
-| 2：lite 时间戳与播放控制 | 有界标记、输入校验、generation、计数器、人工打断与 stop 配置档 | 固定字节向量和并发/断连测试通过；Speaking 持续上行；旧帧不泄漏；人工打断可确定停止 |
-| 3：开源服务端联调 | eb9dc8c+网关，必要的服务端适配另行授权实施 | 单讲/双讲/尾音/延迟均通过；任一不通过则保留 PTT，不把“能上传”标为 AEC 完成 |
-| 4：官方联调与资源验收 | xiaozhi.me 实际传输/模型测试；持续负载、功耗、字幕 UI；全 CI | 官方结果明确为通过或未证实；DRAM/flash 门限通过；两小时堆/栈无泄漏；测试记录注明物理条件 |
-| 5：实验发布与回滚演练 | 决定标准变体是否编入能力，保持运行默认关闭；写使用/恢复说明 | 开关及同身份固件回滚验证通过；仅发布已通过组合；其它板子回归通过；没有未披露的尾音损失 |
+| 2a：lite 播放控制与开源服务器端 AEC 联调 | 先完成有界标记、输入校验、generation、计数器、人工打断与 stop 配置档，再联调 eb9dc8c+网关；必要的服务端适配另行授权实施 | 固定字节向量和并发/断连测试通过；Speaking 持续上行；旧帧不泄漏；人工打断可确定停止；单讲/双讲/尾音/延迟均通过，任一不通过则保留 PTT，不把“能上传”标为 AEC 完成 |
+| 2b（可选）：ES8311 回环可行性实验 | 在阶段 2a 服务器端 AEC 联调之后验证 DAC 右声道回环；录制原始麦克风/参考双通道、带采样率和声道说明的 16 位立体声 WAV，离线分析；不改协议，不在线上传参考声道 | 覆盖静音、TTS 单讲、近端单讲和双讲及不同音量；确认声道映射正确，TTS 在参考通道可辨、无削波，近端语音不成为参考主体；连续录制 ≥10 分钟无丢样，分窗互相关延迟相对中位数漂移建议 ≤1 ms；保存波形、频谱、相关性及延迟报告；失败则停止硬件回环路线，不能称 AEC 已实现 |
+| 2c（可选）：C3 本地轻量 AEC 试验 | 通过阶段 2b 后，独立默认关闭的 Kconfig 接入 lite/afe_aec；先最小 C3 编译链接，再真机比较原始/处理后音频 | 原包 API/许可核查完成；单讲回声衰减建议 ≥10 dB，双讲近端不丢首字、不出现明显吞音；通过 6.3 的误打断/插话/尾音标准及第 5 节 CPU/堆放弃门限；连续 ≥2 小时无泄漏/重启，失败回退服务器端/PTT；软件参考须单独通过同等对齐验收 |
+| 3：官方联调与资源验收 | xiaozhi.me 实际传输/模型测试；持续负载、功耗、字幕 UI；全 CI | 官方结果明确为通过或未证实；DRAM/flash 门限通过；两小时堆/栈无泄漏；测试记录注明物理条件 |
+| 4：实验发布与回滚演练 | 决定标准变体是否编入能力，保持运行默认关闭；写使用/恢复说明 | 开关及同身份固件回滚验证通过；仅发布已通过组合；其它板子回归通过；没有未披露的尾音损失 |
 
-阶段可分批评审，但阶段 2 完成不能替代阶段 3/4 的实际消回声能力验证。若官方条件不可得，允许只发布明确限定的开源网关实验配置，需用户决定。
+阶段 2 统一细分为 2a（服务器端联调，含 lite 时间戳与播放控制前置任务）、2b（回环）、2c（本地 AEC），按此顺序推进，不再单列原“阶段 2”。阶段可分批评审，但阶段 2a 内的接线/播放控制完成不能替代该阶段及阶段 3 的实际消回声能力验证；可选阶段 2b/2c 不阻塞已通过验收的服务器端路线，回环可用也不等于本地 AEC 通过。若官方条件不可得，允许只发布明确限定的开源网关实验配置，需用户决定。
 
 ## 9 待用户决定的问题
 
