@@ -119,6 +119,9 @@ public:
     void Initialize(AudioCodec* codec);
     void Start();
     void Stop();
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+    void WaitForLoopbackStop();  // Worker task only, never the main loop.
+#endif
     void EncodeWakeWord();
     std::unique_ptr<AudioStreamPacket> PopWakeWordPacket();
     const std::string& GetLastWakeWord() const;

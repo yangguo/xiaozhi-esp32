@@ -8,9 +8,14 @@
 #include <esp_codec_dev.h>
 #include <esp_codec_dev_defaults.h>
 #include <mutex>
+#include <atomic>
 
 
 class Es8311AudioCodec : public AudioCodec {
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+protected:
+    std::atomic<uint32_t> loopback_rx_overflows_{0};
+#endif
 private:
     const audio_codec_data_if_t* data_if_ = nullptr;
     const audio_codec_ctrl_if_t* ctrl_if_ = nullptr;
@@ -34,6 +39,16 @@ public:
         gpio_num_t mclk, gpio_num_t bclk, gpio_num_t ws, gpio_num_t dout, gpio_num_t din,
         gpio_num_t pa_pin, uint8_t es8311_addr, bool use_mclk = true, bool pa_inverted = false);
     virtual ~Es8311AudioCodec();
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+    // Only after AudioService tasks have joined; close before changing clocks.
+    void SetLoopbackRate(int rate) {
+        EnableInput(false);
+        EnableOutput(false);
+        input_sample_rate_ = output_sample_rate_ = rate;
+        EnableInput(true);
+        EnableOutput(true);
+    }
+#endif
 
     virtual void SetOutputVolume(int volume) override;
     virtual void EnableInput(bool enable) override;

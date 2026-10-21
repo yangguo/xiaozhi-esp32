@@ -55,3 +55,32 @@ jobs:
           name: ai-passport-incremental-${{ github.sha }}
           path: build/passport-artifacts/incremental/
           if-no-files-found: error
+
+  loopback-experiment:
+    name: Build AI Passport loopback experiment
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v6.1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build loopback experiment
+        shell: bash
+        run: |
+          source "$IDF_PATH/export.sh"
+          python scripts/build.py folotoy/ai-passport --config loopback-exp.json --name ai-passport
+          grep -qx 'CONFIG_PASSPORT_ES8311_LOOPBACK_EXP=y' sdkconfig
+
+      - name: Experimental size report and flash artifacts
+        shell: bash
+        run: |
+          source "$IDF_PATH/export.sh"
+          python scripts/passport_firmware_report.py --build-dir build --report-only
+
+      - name: Upload experimental recovery and incremental files
+        uses: actions/upload-artifact@v7
+        with:
+          name: ai-passport-loopback-exp-${{ github.sha }}
+          path: build/passport-artifacts/
+          if-no-files-found: error

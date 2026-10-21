@@ -61,7 +61,58 @@ Application::~Application() {
     vEventGroupDelete(event_group_);
 }
 
-bool Application::SetDeviceState(DeviceState state) { return state_machine_.TransitionTo(state); }
+bool Application::SetDeviceState(DeviceState state) {
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+    if (loopback_active_ && state != kDeviceStateAudioTesting && state != kDeviceStateFatalError) {
+        return false;
+    }
+#endif
+    return state_machine_.TransitionTo(state);
+}
+
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+void Application::RunLoopbackExperiment(std::function<void()> experiment) {
+    // Called from menu on main task. Require the previous conversation fully closed.
+    if (loopback_active_ || GetDeviceState() != kDeviceStateIdle || IsAudioChannelOpened() ||
+        !audio_service_.IsIdle()) {
+        return;
+    }
+    loopback_active_ = true;
+    if (!SetDeviceState(kDeviceStateAudioTesting)) {
+        loopback_active_ = false;
+        return;
+    }
+    audio_service_.EnableVoiceProcessing(false);
+    audio_service_.EnableWakeWordDetection(false);
+    Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+    loopback_experiment_ = std::move(experiment);
+    // Create before stopping the service, so an allocation failure is recoverable.
+    if (xTaskCreate([](void* arg) {
+            auto* self = static_cast<Application*>(arg);
+            self->audio_service_.WaitForLoopbackStop();
+            self->loopback_experiment_();
+            // Let the idle task reclaim the deleted experiment task stacks before restart.
+            vTaskDelay(pdMS_TO_TICKS(20));
+            self->Schedule([self]() {
+                self->loopback_experiment_ = {};
+                self->audio_service_.Start();
+                self->loopback_active_ = false;
+                if (self->GetDeviceState() == kDeviceStateAudioTesting) {
+                    self->SetDeviceState(kDeviceStateIdle);
+                }
+                Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+            });
+            vTaskDelete(nullptr);
+        }, "loopback", 6144, this, 3, nullptr) != pdPASS) {
+        loopback_experiment_ = {};
+        loopback_active_ = false;
+        SetDeviceState(kDeviceStateIdle);
+        Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+        return;
+    }
+    audio_service_.Stop();
+}
+#endif
 
 void Application::Initialize() {
     auto& board = Board::GetInstance();
@@ -791,6 +842,11 @@ void Application::StartListening() { xEventGroupSetBits(event_group_, MAIN_EVENT
 void Application::StopListening() { xEventGroupSetBits(event_group_, MAIN_EVENT_STOP_LISTENING); }
 
 void Application::HandleToggleChatEvent() {
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+    if (loopback_active_) {
+        return;
+    }
+#endif
     auto state = GetDeviceState();
 
     if (state == kDeviceStateNotifying) {
@@ -855,6 +911,11 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
 }
 
 void Application::HandleStartListeningEvent() {
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+    if (loopback_active_) {
+        return;
+    }
+#endif
     auto state = GetDeviceState();
 
     if (state == kDeviceStateNotifying) {
@@ -891,6 +952,11 @@ void Application::HandleStartListeningEvent() {
 }
 
 void Application::HandleStopListeningEvent() {
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+    if (loopback_active_) {
+        return;
+    }
+#endif
     auto state = GetDeviceState();
 
     if (state == kDeviceStateNotifying) {
@@ -908,6 +974,11 @@ void Application::HandleStopListeningEvent() {
 }
 
 void Application::HandleWakeWordDetectedEvent() {
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+    if (loopback_active_) {
+        return;
+    }
+#endif
     if (!protocol_) {
         return;
     }
@@ -1180,6 +1251,11 @@ void Application::ConfigureWakeWordForListening() {
 }
 
 void Application::StartNotification(std::string audio_url, std::vector<NotifySubtitle> subtitles) {
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+    if (loopback_active_) {
+        return;
+    }
+#endif
     if (GetDeviceState() != kDeviceStateIdle || notify_player_.IsBusy()) {
         ESP_LOGW(TAG, "Ignoring notify message while device is busy");
         return;
@@ -1444,7 +1520,14 @@ void Application::SetAecMode(AecMode mode) {
     });
 }
 
-void Application::PlaySound(const std::string_view& sound) { audio_service_.PlaySound(sound); }
+void Application::PlaySound(const std::string_view& sound) {
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+    if (loopback_active_) {
+        return;
+    }
+#endif
+    audio_service_.PlaySound(sound);
+}
 
 void Application::ResetProtocol() {
     Schedule([this]() {

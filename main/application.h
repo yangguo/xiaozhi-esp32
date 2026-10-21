@@ -107,6 +107,9 @@ public:
      * Sends MAIN_EVENT_STOP_LISTENING to be handled in Run()
      */
     void StopListening();
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+    void RunLoopbackExperiment(std::function<void()> experiment);
+#endif
 
     void Reboot();
     void WakeWordInvoke(const std::string& wake_word);
@@ -132,6 +135,10 @@ public:
     void ResetProtocol();
 
 private:
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+    std::atomic<bool> loopback_active_{false};
+    std::function<void()> loopback_experiment_;
+#endif
     Application();
     ~Application();
 

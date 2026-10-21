@@ -1,5 +1,6 @@
 #include "es8311_audio_codec.h"
 
+#include <algorithm>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -12,6 +13,10 @@ Es8311AudioCodec::Es8311AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port,
     duplex_ = true; // 是否双工
     input_reference_ = false; // 是否使用参考输入，实现回声消除
     input_channels_ = 1; // 输入通道数
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+    input_reference_ = true;
+    input_channels_ = 2;
+#endif
     input_sample_rate_ = input_sample_rate;
     output_sample_rate_ = output_sample_rate;
     pa_pin_ = pa_pin;
@@ -49,6 +54,11 @@ Es8311AudioCodec::Es8311AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port,
     es8311_cfg.codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH;
     es8311_cfg.pa_pin = pa_pin;
     es8311_cfg.use_mclk = use_mclk;
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+    // esp_codec_dev 1.6.2: REG44=0x58 (ADCL + DACR). Header documents
+    // right RX slot as DAC output. Passport routing/order still needs measurement.
+    es8311_cfg.no_dac_ref = false;
+#endif
     es8311_cfg.hw_gain.pa_voltage = 5.0;
     es8311_cfg.hw_gain.codec_dac_voltage = 3.3;
     es8311_cfg.pa_reverted = pa_inverted_;
@@ -93,7 +103,11 @@ void Es8311AudioCodec::UpdateDeviceState() {
 
         esp_codec_dev_sample_info_t fs = {
             .bits_per_sample = 16,
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+            .channel = 2,
+#else
             .channel = 1,
+#endif
             .channel_mask = 0,
             .sample_rate = (uint32_t)input_sample_rate_,
             .mclk_multiple = 0,
@@ -165,6 +179,16 @@ void Es8311AudioCodec::CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gp
 
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle_, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_handle_, &std_cfg));
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+    static_assert(std::atomic<uint32_t>::is_always_lock_free);
+    i2s_event_callbacks_t callbacks = {};
+    callbacks.on_recv_q_ovf = [](i2s_chan_handle_t, i2s_event_data_t*, void* context) {
+        auto* self = static_cast<Es8311AudioCodec*>(context);
+        self->loopback_rx_overflows_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    };
+    ESP_ERROR_CHECK(i2s_channel_register_event_callback(rx_handle_, &callbacks, this));
+#endif
     ESP_ERROR_CHECK(i2s_channel_enable(tx_handle_));
     ESP_ERROR_CHECK(i2s_channel_enable(rx_handle_));
     ESP_LOGI(TAG, "Duplex channels created");
@@ -210,8 +234,23 @@ int Es8311AudioCodec::Read(int16_t* dest, int samples) {
 }
 
 int Es8311AudioCodec::Write(const int16_t* data, int samples) {
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+    // Normal service supplies mono. Feed BOTH DAC slots, including DACR reference.
+    int16_t stereo[320];
+    for (int offset = 0; output_enabled_ && offset < samples; offset += 160) {
+        int count = std::min(160, samples - offset);
+        for (int i = 0; i < count; ++i) {
+            stereo[2 * i] = stereo[2 * i + 1] = data[offset + i];
+        }
+        if (esp_codec_dev_write(dev_, stereo, count * 4) != ESP_OK) {
+            return 0;
+        }
+    }
+    return samples;
+#else
     if (output_enabled_) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(esp_codec_dev_write(dev_, (void*)data, samples * sizeof(int16_t)));
     }
     return samples;
+#endif
 }

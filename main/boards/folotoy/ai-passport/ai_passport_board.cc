@@ -7,6 +7,9 @@
 #include "passport_activity.h"
 #include "passport_display.h"
 #include "passport_ptt.h"
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+#include "passport_loopback.h"
+#endif
 #include "power_save_timer.h"
 #include "wifi_board.h"
 
@@ -154,6 +157,9 @@ public:
         : Es8311AudioCodec(i2c_master_handle, i2c_port, input_sample_rate, output_sample_rate, mclk,
                            bclk, ws, dout, din, pa_pin, es8311_addr) {}
 
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+    void RunLoopback() { RunPassportLoopback(this, rx_handle_, tx_handle_, loopback_rx_overflows_); }
+#endif
     void StopI2s() {
         // TX before RX, matching the FoloToy BSP's audio_disable_i2s_channels().
         const i2s_chan_handle_t channels[] = {tx_handle_, rx_handle_};
@@ -1252,6 +1258,13 @@ public:
         InitializeCodecI2c();
         InitializeSpi();
         InitializeDisplay();
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+        display_->on_loopback_test = [this]() {
+            Application::GetInstance().RunLoopbackExperiment([this]() {
+                static_cast<AiPassportAudioCodec*>(GetAudioCodec())->RunLoopback();
+            });
+        };
+#endif
         InitializeButtons();
         GetBacklight()->RestoreBrightness();
         InitializePowerSaveTimer();

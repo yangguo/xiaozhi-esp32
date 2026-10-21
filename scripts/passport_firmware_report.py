@@ -585,6 +585,7 @@ def run_report(
     build_dir: Path,
     baseline_path: Path,
     size_text: str | None = None,
+    report_only: bool = False,
 ) -> int:
     images, flash_options = resolve_flash_images(build_dir)
     try:
@@ -593,6 +594,9 @@ def run_report(
         measured = build_measured(size_text, images)
         baseline = load_baseline(baseline_path)
         failures, warnings = evaluate_gates(measured, baseline)
+        if report_only:
+            warnings.extend(f"Experimental build (not gated): {failure}" for failure in failures)
+            failures = []
         report_text = _format_report(measured, failures, warnings)
         print(report_text, end="")
         for warning in warnings:
@@ -621,10 +625,14 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="Parse this idf.py size transcript instead of running the tool",
     )
+    parser.add_argument(
+        "--report-only", action="store_true",
+        help="Stage artifacts and report size without applying gates (experimental builds only)",
+    )
     args = parser.parse_args(argv)
     size_text = args.size_text.read_text(encoding="utf-8") if args.size_text else None
     try:
-        return run_report(args.build_dir, args.baseline, size_text)
+        return run_report(args.build_dir, args.baseline, size_text, report_only=args.report_only)
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as error:
         print(f"AI Passport firmware size report failed: {error}", file=sys.stderr)
         return 1

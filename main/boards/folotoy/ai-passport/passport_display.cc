@@ -606,7 +606,11 @@ void PassportDisplay::RenderMenu() {
     } else {
         text += TextSettings();
         text += "\n\n";
-        const char* items[] = {TextBrightness(), TextTheme(), TextBack()};
+        const char* items[] = {TextBrightness(), TextTheme(),
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+                               "Loopback Test",
+#endif
+                               TextBack()};
         for (int i = 0; i < kItemCount; ++i) {
             text += (i == menu_index_) ? "> " : "  ";
             text += items[i];
@@ -718,6 +722,14 @@ void PassportDisplay::HandleMenuAction(MenuAction action) {
         if (menu_index_ == kItemBrightness) {
             page_ = Page::kBrightness;
             LoadBrightness();
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+        } else if (menu_index_ == kItemLoopback) {
+            CloseMenu();
+            if (on_loopback_test) {
+                on_loopback_test();
+            }
+            return;
+#endif
         } else if (menu_index_ == kItemTheme) {
             ToggleTheme();
             return;

@@ -455,6 +455,11 @@ class PassportArtifactTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            from unittest.mock import patch
+            with patch.object(report, "evaluate_gates", return_value=(["synthetic regression"], [])):
+                self.assertEqual(report.run_report(build_dir, report.DEFAULT_BASELINE, C3_SIZE), 1)
+                self.assertEqual(report.run_report(build_dir, report.DEFAULT_BASELINE, C3_SIZE,
+                                                   report_only=True), 0)
             code = report.run_report(build_dir, report.DEFAULT_BASELINE, C3_SIZE)
             self.assertEqual(code, 0)
             summary = (
@@ -472,6 +477,17 @@ class PassportArtifactTests(unittest.TestCase):
 
 
 class PassportBoardConfigTests(unittest.TestCase):
+    def test_experiment_preserves_identity_and_adds_only_scoped_options(self):
+        board = ROOT / "main/boards/folotoy/ai-passport"
+        default = json.loads((board / "config.json").read_text())
+        experiment = json.loads((board / "loopback-exp.json").read_text())
+        options = experiment["builds"][0]["sdkconfig_append"]
+        self.assertEqual(options[-2:], ["CONFIG_PASSPORT_ES8311_LOOPBACK_EXP=y",
+                                       "CONFIG_PASSPORT_LOOPBACK_EXPORT_PCM=y"])
+        experiment["builds"][0]["sdkconfig_append"] = options[:-2]
+        self.assertEqual(experiment, default)
+
+
     def test_config_stays_c3_8mb_wake_word_off_pm_on(self):
         config = json.loads(
             (ROOT / "main/boards/folotoy/ai-passport/config.json").read_text(encoding="utf-8")
@@ -481,7 +497,7 @@ class PassportBoardConfigTests(unittest.TestCase):
         append = config["builds"][0]["sdkconfig_append"]
         self.assertIn("CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y", append)
         self.assertIn('CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions/v2/8m.csv"', append)
-        self.assertIn("CONFIG_USE_ESP_WAKE_WORD=n", append)
+        self.assertIn("CONFIG_WAKE_WORD_DISABLED=y", append)
         self.assertIn("CONFIG_PM_ENABLE=y", append)
         joined = "\n".join(append)
         self.assertNotIn("SPIRAM", joined)

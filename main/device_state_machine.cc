@@ -56,6 +56,11 @@ bool DeviceStateMachine::IsValidTransition(DeviceState from, DeviceState to) con
 
         case kDeviceStateAudioTesting:
             // Can go back to wifi configuring
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+            if (to == kDeviceStateIdle) {
+                return true;
+            }
+#endif
             return to == kDeviceStateWifiConfiguring;
 
         case kDeviceStateActivating:
@@ -70,6 +75,11 @@ bool DeviceStateMachine::IsValidTransition(DeviceState from, DeviceState to) con
                    to == kDeviceStateActivating;
 
         case kDeviceStateIdle:
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+            if (to == kDeviceStateAudioTesting) {
+                return true;
+            }
+#endif
             // Can go to connecting, listening (manual mode), speaking, activating, upgrading, or wifi configuring
             return to == kDeviceStateConnecting ||
                    to == kDeviceStateListening ||

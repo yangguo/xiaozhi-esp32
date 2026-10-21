@@ -48,6 +48,9 @@ public:
     PassportActivity NoteDeviceState(DeviceState state);
     PassportActivity activity() const { return activity_; }
 
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+    std::function<void()> on_loopback_test;
+#endif
     bool IsMenuOpen() const;
     void OpenMenu();
     void CloseMenu();
@@ -62,8 +65,14 @@ private:
 
     static constexpr int kItemBrightness = 0;
     static constexpr int kItemTheme = 1;
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+    static constexpr int kItemLoopback = 2;
+    static constexpr int kItemBack = 3;
+    static constexpr int kItemCount = 4;
+#else
     static constexpr int kItemBack = 2;
     static constexpr int kItemCount = 3;
+#endif
 
     void ApplyGlassSafeArea();
     void RefreshSubtitlePages();

@@ -1174,3 +1174,28 @@ menu "TAIJIPAI_S3_CONFIG"
 endmenu
 
 endmenu
+
+menu "Passport loopback experiment"
+    depends on BOARD_TYPE_FOLOTOY_AI_PASSPORT
+
+config PASSPORT_ES8311_LOOPBACK_EXP
+    bool "ES8311 loopback feasibility experiment"
+    default n
+    help
+        Passport only. Stereo ADCL + DACR input and duplicated stereo output.
+        Adds an exclusive offline Loopback Test to the settings menu; no AEC.
+
+config PASSPORT_LOOPBACK_SECONDS
+    int "Loopback duration (seconds)"
+    depends on PASSPORT_ES8311_LOOPBACK_EXP
+    range 1 3600
+    default 10
+
+config PASSPORT_LOOPBACK_EXPORT_PCM
+    bool "Export raw stereo PCM as LBK base64 console lines"
+    depends on PASSPORT_ES8311_LOOPBACK_EXP
+    default n
+    help
+        Requires a console sustaining about 90 kB/s (USB Serial/JTAG recommended).
+        Slow logging drops export blocks, counted explicitly; capture never waits.
+endmenu

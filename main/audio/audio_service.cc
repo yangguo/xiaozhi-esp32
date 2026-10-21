@@ -115,6 +115,9 @@ void AudioService::Initialize(AudioCodec* codec) {
 }
 
 void AudioService::Start() {
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+    xEventGroupClearBits(event_group_, BIT5 | BIT6 | BIT7);
+#endif
     service_stopped_.store(false);
     xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING | AS_EVENT_WAKE_WORD_RUNNING |
                                            AS_EVENT_AUDIO_PROCESSOR_RUNNING |
@@ -128,6 +131,9 @@ void AudioService::Start() {
         [](void* arg) {
             AudioService* audio_service = (AudioService*)arg;
             audio_service->AudioInputTask();
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+            xEventGroupSetBits(audio_service->event_group_, BIT5);
+#endif
             vTaskDelete(NULL);
         },
         "audio_input", 2048 * 3, this, 8, &audio_input_task_handle_, 0);
@@ -137,6 +143,9 @@ void AudioService::Start() {
         [](void* arg) {
             AudioService* audio_service = (AudioService*)arg;
             audio_service->AudioOutputTask();
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+            xEventGroupSetBits(audio_service->event_group_, BIT6);
+#endif
             vTaskDelete(NULL);
         },
         "audio_output", 2048 * 2, this, 4, &audio_output_task_handle_);
@@ -146,6 +155,9 @@ void AudioService::Start() {
         [](void* arg) {
             AudioService* audio_service = (AudioService*)arg;
             audio_service->AudioInputTask();
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+            xEventGroupSetBits(audio_service->event_group_, BIT5);
+#endif
             vTaskDelete(NULL);
         },
         "audio_input", 2048 * 2, this, 8, &audio_input_task_handle_);
@@ -155,9 +167,16 @@ void AudioService::Start() {
         [](void* arg) {
             AudioService* audio_service = (AudioService*)arg;
             audio_service->AudioOutputTask();
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+            xEventGroupSetBits(audio_service->event_group_, BIT6);
+#endif
             vTaskDelete(NULL);
         },
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+        "audio_output", 3072, this, 4, &audio_output_task_handle_);
+#else
         "audio_output", 2048, this, 4, &audio_output_task_handle_);
+#endif
 #endif
 
     /* Start the opus codec task */
@@ -165,10 +184,22 @@ void AudioService::Start() {
         [](void* arg) {
             AudioService* audio_service = (AudioService*)arg;
             audio_service->OpusCodecTask();
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+            xEventGroupSetBits(audio_service->event_group_, BIT7);
+#endif
             vTaskDelete(NULL);
         },
         "opus_codec", 2048 * 12, this, 2, &opus_codec_task_handle_);
 }
+
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+void AudioService::WaitForLoopbackStop() {
+    xEventGroupWaitBits(event_group_, BIT5 | BIT6 | BIT7, pdFALSE, pdTRUE, portMAX_DELAY);
+    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+    audio_send_queue_.clear();
+    timestamp_queue_.clear();
+}
+#endif
 
 void AudioService::Stop() {
     esp_timer_stop(audio_power_timer_);
@@ -607,6 +638,11 @@ void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t
 }
 
 bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait) {
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+    if (service_stopped_) {
+        return false;
+    }
+#endif
     std::unique_lock<std::mutex> lock(audio_queue_mutex_);
     const uint32_t generation = playback_generation_;
     if (audio_decode_queue_.size() >= MAX_DECODE_PACKETS_IN_QUEUE) {
@@ -766,6 +802,11 @@ void AudioService::EnableDeviceAec(bool enable) {
 void AudioService::SetCallbacks(AudioServiceCallbacks& callbacks) { callbacks_ = callbacks; }
 
 void AudioService::PlaySound(const std::string_view& ogg) {
+#if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
+    if (service_stopped_) {
+        return;
+    }
+#endif
     if (!codec_->output_enabled()) {
         esp_timer_stop(audio_power_timer_);
         esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
