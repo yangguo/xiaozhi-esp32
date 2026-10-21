@@ -93,8 +93,8 @@ void RunPassportLoopback(Es8311AudioCodec* codec, i2s_chan_handle_t rx, i2s_chan
         printf("LBK_STAT sec=%lu mic_rms=%.3f ref_rms=%.3f lag_samples=%d lag_ms=%.3f "
                "corr=%.6f valid=%d captured=%lu capture_errors=%lu export_drops=%lu "
                "rx_overflows=%lu tx_errors=%lu lost_samples=unknown\n",
-               static_cast<unsigned long>(second), std::sqrt(mic_sq / std::max(1u,count)),
-               std::sqrt(ref_sq / std::max(1u,count)), c.lag, c.lag * 1000.0/kRate, c.peak,
+               static_cast<unsigned long>(second), std::sqrt(mic_sq / std::max<uint32_t>(1u,count)),
+               std::sqrt(ref_sq / std::max<uint32_t>(1u,count)), c.lag, c.lag * 1000.0/kRate, c.peak,
                window_count == 640 && std::fabs(c.peak) > 0.2,
                static_cast<unsigned long>(e->captured.load()),
                static_cast<unsigned long>(e->capture_errors.load()),
