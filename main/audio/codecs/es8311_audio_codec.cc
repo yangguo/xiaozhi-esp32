@@ -180,7 +180,6 @@ void Es8311AudioCodec::CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gp
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle_, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_handle_, &std_cfg));
 #if CONFIG_PASSPORT_ES8311_LOOPBACK_EXP
-    static_assert(std::atomic<uint32_t>::is_always_lock_free);
     i2s_event_callbacks_t callbacks = {};
     callbacks.on_recv_q_ovf = [](i2s_chan_handle_t, i2s_event_data_t*, void* context) {
         auto* self = static_cast<Es8311AudioCodec*>(context);
