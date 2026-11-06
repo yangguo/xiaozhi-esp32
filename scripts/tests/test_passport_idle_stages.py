@@ -62,9 +62,7 @@ struct Battery { void EnterSleep() {} };
 struct Slept {};
 void esp_deep_sleep_start() { throw Slept{}; }
 void esp_restart() { assert(false); }
-constexpr int kSoftSleepSeconds = 360, kDeepSleepSeconds = 2160;
-constexpr int kDeepSleepAfterSoftSleepSeconds = 1800;
-constexpr int64_t kIdleTimerPeriodUs = 1000000;
+// BOARD_TIMING_CONSTANTS
 struct Passport {
     Timer timer;
     Timer* idle_timer_ = &timer;
@@ -82,6 +80,13 @@ struct Passport {
     void ReleasePins(const int*, unsigned long, const char*) {}
     void PrepareDisplayForDeepSleep() {}
 '''
+        timing = "\n".join(line for line in board.splitlines() if line.startswith((
+            "static constexpr int kSoftSleepSeconds =",
+            "static constexpr int kDeepSleepSeconds =",
+            "static constexpr int kDeepSleepAfterSoftSleepSeconds =",
+            "static constexpr int64_t kIdleTimerPeriodUs =",
+        )))
+        source = source.replace("// BOARD_TIMING_CONSTANTS", timing)
         for signature in (
             "bool IdleForAtLeast(", "void RearmIdleStages()", "void StopIdleTimer()",
             "void StartIdleTimer()", "bool StageRequestStillCurrent(", "void OnIdleSecond()",
