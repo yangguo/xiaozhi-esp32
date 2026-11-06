@@ -481,7 +481,7 @@ class PassportBoardConfigTests(unittest.TestCase):
         append = config["builds"][0]["sdkconfig_append"]
         self.assertIn("CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y", append)
         self.assertIn('CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions/v2/8m.csv"', append)
-        self.assertIn("CONFIG_USE_ESP_WAKE_WORD=n", append)
+        self.assertIn("CONFIG_WAKE_WORD_DISABLED=y", append)
         self.assertIn("CONFIG_PM_ENABLE=y", append)
         joined = "\n".join(append)
         self.assertNotIn("SPIRAM", joined)

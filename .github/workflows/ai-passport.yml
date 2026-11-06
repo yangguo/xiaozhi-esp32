@@ -1,6 +1,6 @@
 # Dedicated AI Passport build. The upstream matrix in build.yml is unchanged
 # and only uploads merged-binary.bin for boards it selects. This workflow
-# always builds folotoy/ai-passport in espressif/idf:v6.1, checks static
+# always builds folotoy/ai-passport with a pinned IDF release/v6.1 image, checks static
 # memory, and publishes a full recovery image plus an incremental flash set.
 name: Build AI Passport
 
@@ -19,7 +19,7 @@ jobs:
     name: Build AI Passport
     runs-on: ubuntu-latest
     container:
-      image: espressif/idf:v6.1
+      image: espressif/idf:release-v6.1@sha256:8ac794c57fd4cac246cb8d2ada4002fa26337ac7df683047b5b83743dbedb6b7
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -31,6 +31,8 @@ jobs:
         shell: bash
         run: |
           source "$IDF_PATH/export.sh"
+          idf.py --version
+          git -C "$IDF_PATH" rev-parse HEAD
           python scripts/build.py folotoy/ai-passport --name ai-passport
 
       - name: Firmware size check
