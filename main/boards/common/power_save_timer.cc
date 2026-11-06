@@ -6,14 +6,16 @@
 
 #define TAG "PowerSaveTimer"
 
-
 PowerSaveTimer::PowerSaveTimer(int cpu_max_freq, int seconds_to_sleep, int seconds_to_shutdown)
-    : cpu_max_freq_(cpu_max_freq), seconds_to_sleep_(seconds_to_sleep), seconds_to_shutdown_(seconds_to_shutdown) {
+    : cpu_max_freq_(cpu_max_freq),
+      seconds_to_sleep_(seconds_to_sleep),
+      seconds_to_shutdown_(seconds_to_shutdown) {
     esp_timer_create_args_t timer_args = {
-        .callback = [](void* arg) {
-            auto self = static_cast<PowerSaveTimer*>(arg);
-            self->PowerSaveCheck();
-        },
+        .callback =
+            [](void* arg) {
+                auto self = static_cast<PowerSaveTimer*>(arg);
+                self->PowerSaveCheck();
+            },
         .arg = this,
         .dispatch_method = ESP_TIMER_TASK,
         .name = "power_save_timer",
@@ -36,6 +38,7 @@ void PowerSaveTimer::SetEnabled(bool enabled) {
         }
 
         ticks_ = 0;
+        shutdown_requested_ = false;
         enabled_ = enabled;
         ESP_ERROR_CHECK(esp_timer_start_periodic(power_save_timer_, 1000000));
         ESP_LOGI(TAG, "Power save timer enabled");
@@ -63,6 +66,7 @@ void PowerSaveTimer::PowerSaveCheck() {
     auto& app = Application::GetInstance();
     if (!in_sleep_mode_ && !app.CanEnterSleepMode()) {
         ticks_ = 0;
+        shutdown_requested_ = false;
         return;
     }
 
@@ -98,13 +102,17 @@ void PowerSaveTimer::PowerSaveCheck() {
             }
         }
     }
-    if (seconds_to_shutdown_ != -1 && ticks_ >= seconds_to_shutdown_ && on_shutdown_request_) {
+    // Latch before invoking the callback so it can rearm the request with WakeUp().
+    if (seconds_to_shutdown_ != -1 && ticks_ >= seconds_to_shutdown_ && on_shutdown_request_ &&
+        !shutdown_requested_) {
+        shutdown_requested_ = true;
         on_shutdown_request_();
     }
 }
 
 void PowerSaveTimer::WakeUp() {
     ticks_ = 0;
+    shutdown_requested_ = false;
     if (in_sleep_mode_) {
         ESP_LOGI(TAG, "Exiting power save mode");
         in_sleep_mode_ = false;
