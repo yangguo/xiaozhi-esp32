@@ -243,6 +243,7 @@ private:
         }
         GetDisplay()->ShowNotification(std::string(Lang::Strings::VOLUME) + ": "+std::to_string(codec->output_volume()));
         power_save_timer_->WakeUp();
+        GetBacklight()->RestoreBrightness();
     }
 
     void InitializeKnob() {
@@ -279,6 +280,7 @@ private:
         iot_button_register_cb(btns, BUTTON_SINGLE_CLICK, nullptr, [](void* button_handle, void* usr_data) {
             auto self = static_cast<SensecapWatcher*>(usr_data);
             self->power_save_timer_->WakeUp();
+            self->GetBacklight()->RestoreBrightness();
 
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateStarting) {
@@ -644,6 +646,9 @@ public:
     virtual void SetPowerSaveLevel(PowerSaveLevel level) override {
         if (level != PowerSaveLevel::LOW_POWER) {
             power_save_timer_->WakeUp();
+            // Charging shutdown disables the timer and clears its sleep flag.
+            // Restore explicitly even when WakeUp() has no exit callback left.
+            GetBacklight()->RestoreBrightness();
         }
         WifiBoard::SetPowerSaveLevel(level);
     }

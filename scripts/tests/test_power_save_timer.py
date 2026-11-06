@@ -131,12 +131,16 @@ void IoExpanderSetLevel(int pin, int level) {
 float BatterygetPercent(bool) { return 80; }
 struct Display { void SetPowerSaveMode(bool) {} };
 struct Backlight {
-    void SetBrightness(int) {}
-    void RestoreBrightness() {}
+    int brightness = 75;
+    void SetBrightness(int value) { brightness = value; }
+    void RestoreBrightness() { brightness = 75; }
 };
+enum class PowerSaveLevel { LOW_POWER, PERFORMANCE };
 struct BatteryProvider {
     virtual bool GetBatteryLevel(int&, bool&, bool&) = 0;
+    virtual void SetPowerSaveLevel(PowerSaveLevel) {}
 };
+using WifiBoard = BatteryProvider;
 class Watcher : public BatteryProvider {
 public:
     PowerSaveTimer* power_save_timer_;
@@ -155,11 +159,22 @@ public:
         board = WATCHER.read_text()
         source += function(board, "void InitializePowerSaveTimer()")
         source += function(board, "virtual bool GetBatteryLevel(")
+        source += function(board, "virtual void SetPowerSaveLevel(")
         source += r'''
 };
 int main(int argc, char** argv) {
     assert(argc == 2);
     std::string test = argv[1];
+    if (test == "charging_wake") {
+        Watcher watcher;
+        watcher.InitializePowerSaveTimer();
+        Tick(299); usb_connected = true; Tick(1);
+        assert(watcher.backlight.brightness == 0);
+        watcher.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+        assert(watcher.backlight.brightness == 75);
+        Tick(600); assert(power_offs == 0);
+        return 0;
+    }
     if (test == "usb_boot" || test == "battery_boot" || test == "plug_unplug" ||
         test == "short_usb" || test == "queued_usb") {
         usb_connected = test == "usb_boot";
@@ -251,6 +266,9 @@ int main(int argc, char** argv) {
 
     def test_request_once_per_idle_cycle(self):
         self.run_case("once")
+
+    def test_watcher_can_wake_screen_after_charging_shutdown(self):
+        self.run_case("charging_wake")
 
     def test_wakeup_rearms_request(self):
         self.run_case("wake")
