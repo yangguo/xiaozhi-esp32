@@ -268,6 +268,19 @@ deadline and does not disable these stages:
 | 360 s | Soft sleep | Panel Sleep In, backlight off, codec off, CPU down-clocked to 40 MHz |
 | 2160 s | Deep sleep | Entered from the soft-sleep stage; any key wakes the device through GPIO0 and restarts the application |
 
+The dim stage uses `PowerSaveTimer`. Soft sleep and deep sleep use a board-owned
+1 Hz `esp_timer`, independently of the shared shutdown request, which now fires
+once per idle cycle. The timer schedules transitions onto the main task; hardware
+and application-state checks stay there. Both button routes invalidate queued
+stage requests before waking the shared timer. A declined soft-sleep request is
+retried once per second; deep sleep follows actual soft-sleep entry by 1800 s,
+so a busy application can postpone the nominal 2160 s deadline.
+
+This timer migration backports upstream `0b984159` together with `ad36dde9`.
+Host tests cover deadlines, retries and cancelled requests. The 60/360/2160 s
+timings, currents, wake gestures and post-wake voice still require a new physical
+device acceptance run; previous measurements do not validate this revision.
+
 `kDimSeconds`, `kSoftSleepSeconds`, `kDeepSleepSeconds`, and `kStandbyCpuMinFreq`
 at the top of `ai_passport_board.cc` tune the policy. The dim level is
 `kPassportDimBrightness` in `passport_display.h`, shared with the settings
@@ -307,11 +320,9 @@ That gate has two consequences worth knowing about:
   Sleeping outside the idle state would be a framework change affecting every
   board, so it is not done here - a Passport delivered unconfigured should be
   configured, not left on a shelf.
-- `PowerSaveTimer` stops checking that gate once it is past its sleep deadline,
-  so the board re-checks `CanEnterSleepMode()` itself in both stage transitions.
-  A conversation started by the wake word presses no key and therefore never
-  resets the tick counter; without the re-check the deep-sleep fallback would cut
-  it off mid-conversation.
+- The board re-checks `CanEnterSleepMode()` in both stage transitions and retries
+  soft sleep until accepted. A conversation started without a key press must
+  neither be interrupted nor permanently consume the sleep request.
 
 ### Turning the screen and audio off
 
